@@ -19,26 +19,9 @@ using System.IO;
 using System.Reflection;
 using UnityEngine;
 
-/*
-Fixed size of some monuments
-Added `Additional monuments to exclude` to include canyon, lakes, oasis, jungle ruins, and jungle swamp by default
-Added `nteleportation.nocosts` permission
-Added `Home -> Bypass Cooldown From Within Safe Zone` (false)
-Added `Block For No Cupboard` (false) for home and TPR
-Added `Remove Hostility` (false) for home, TPR and town
-Added hook OnPlayerTeleported(BasePlayer caller, BasePlayer origin, BasePlayer target, Vector3 oldPosition, Vector3 newPosition) called from /tp command
-Added hook OnPlayerTeleportedTo(BasePlayer caller, BasePlayer target, Vector3 oldPosition, Vector3 newPosition) called from /tp command
-Added hook OnPlayerTeleported(BasePlayer caller, BasePlayer target, Vector3 oldPosition, Vector3 newPosition) called from /tp command
-Added hook OnPlayerTeleported(BasePlayer caller, BasePlayer target) called from /tp command
-Added hook OnPlayerTeleported(BasePlayer caller, Vector3 to) called from /tp command
-Added hook OnTeleportBackAccepted(BasePlayer caller, Vector3 to, int countdown = 0) called from /tpb
-Added hook OnHomeAccepted(BasePlayer player, string home, Vector3 homePos, int countdown) called from /home
-Added hook OnTeleportRequestCompleted(BasePlayer target, BasePlayer requester, int countdown) called from /tpa
-*/
-
 namespace Oxide.Plugins
 {
-    [Info("NTeleportation", "nivex", "1.9.111")]
+    [Info("NTeleportation", "nivex", "1.9.112")]
     [Description("Multiple teleportation systems for admin and players")]
     class NTeleportation : RustPlugin
     {
@@ -51,7 +34,7 @@ namespace Oxide.Plugins
         private bool newSave;
         private const string NewLine = "\n";
         private const string TPA = "tpa";
-        private static readonly string[] emptyArg = Array.Empty<string>();
+        private readonly string[] emptyArg = Array.Empty<string>();
         private const string PermAdmin = "nteleportation.admin";
         private const string PermRestrictions = "nteleportation.norestrictions";
         private const string ConfigDefaultPermVip = "nteleportation.vip";
@@ -282,7 +265,8 @@ namespace Oxide.Plugins
                     }
                     if (homes.Count == 0)
                     {
-                        foreach (var bed in SleepingBag.FindForPlayer(userid, true))
+                        using var beds = SleepingBag.FindForPlayer(userid, true);
+                        foreach (var bed in beds)
                         {
                             var building = bed.GetBuilding();
                             if (building == null || !building.HasDecayEntities())
@@ -429,7 +413,7 @@ namespace Oxide.Plugins
             [JsonProperty(PropertyName = "Use Server Rewards")]
             public bool UseServerRewards = false;
 
-            [JsonProperty(PropertyName = "Additional monuments to exclude (experimental-subject to being update resets)", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            [JsonProperty(PropertyName = "Additional monuments to exclude (experimental)", ObjectCreationHandling = ObjectCreationHandling.Replace)]
             public List<string> MonumentsToExclude = new() { "lake", "canyon", "oasis", "jungle swamp", "jungle ruin" };
 
             [JsonProperty(PropertyName = "Wipe On Upgrade Or Change")]
@@ -1348,6 +1332,7 @@ namespace Oxide.Plugins
                 {"TooCloseToCave", "You can't teleport so close to a cave!"},
                 {"HomeTooCloseToCave", "You can't set home so close to a cave!"},
                 {"HomeTooCloseToMon", "You can't set home so close to a monument!"},
+                {"TooCloseToMonTp", "You can't teleport so close to a monument!"},
                 {"CannotTeleportFromHome", "You must leave your base to be able to teleport!"},
                 {"WaitGlobalCooldown", "You must wait {0} on your global teleport cooldown!" },
                 {"DM_TownTP", "You teleported to {0}!"},
@@ -1860,6 +1845,7 @@ namespace Oxide.Plugins
                 {"TPCrafting", "Вы не можете телепортироваться в процессе крафта!"},
                 {"TPBlockedItem", "Вы не можете телепортироваться пока несёте: {0}!"},
                 {"TooCloseToMon", "Вы не можете телепортироваться так близко к {0}!"},
+                {"TooCloseToMonTp", "Вы не можете телепортироваться так близко к памятнику!"},
                 {"TPHomeSafeZoneOnly", "Вы можете телепортироваться домой только из безопасной зоны!" },
                 {"TooCloseToCave", "Вы не можете телепортироваться так близко к пещере!"},
                 {"HomeTooCloseToCave", "Вы не можете сохранить местоположение в качестве дома так близко к пещере!"},
@@ -2375,6 +2361,7 @@ namespace Oxide.Plugins
                 {"TPCrafting", "Ви не можете телепортуватись у процесі крафту!"},
                 {"TPBlockedItem", "Ви не можете телепортуватися поки що несете: {0}!"},
                 {"TooCloseToMon", "Ви не можете телепортуватися так близько до {0}!"},
+                {"TooCloseToMonTp", "Ви не можете телепортувати так близько до пам’ятника!"},
                 {"TPHomeSafeZoneOnly", "Ви можете телепортуватися додому лише з безпечної зони!" },
                 {"TooCloseToCave", "Ви не можете телепортуватись так близько до печери!"},
                 {"HomeTooCloseToCave", "Ви не можете зберегти розташування як будинок так близько до печери!"},
@@ -2907,6 +2894,8 @@ namespace Oxide.Plugins
         }
 
         private bool CanBypassRestrictions(string userid) => permission.UserHasPermission(userid, "nteleportation.norestrictions");
+        
+        private bool CanBypassCosts(string userid) => permission.UserHasPermission(userid, "nteleportation.nocosts");
 
         private void RegisterCommand(string command, string callback, string perm = null)
         {
@@ -3320,7 +3309,7 @@ namespace Oxide.Plugins
                 for (int i = TeleportTimers.Count - 1; i >= 0; i--)
                 {
                     TeleportTimer teleportTimer = TeleportTimers[i];
-                    if (time >= teleportTimer.time)
+                    if (teleportTimer.time > 0 && time >= teleportTimer.time)
                     {
                         teleportTimer.action?.Invoke();
                         teleportTimer.Invalidate();
@@ -3333,7 +3322,7 @@ namespace Oxide.Plugins
                 for (int i = PendingRequests.Count - 1; i >= 0; i--)
                 {
                     PendingRequest pendingRequest = PendingRequests[i];
-                    if (time >= pendingRequest.time)
+                    if (pendingRequest.time > 0 && time >= pendingRequest.time)
                     {
                         pendingRequest.action?.Invoke();
                         pendingRequest.Invalidate();
@@ -4991,11 +4980,7 @@ namespace Oxide.Plugins
             {
                 return false;
             }
-            if (permission.UserHasPermission(player.UserIDString, "nteleportion.nocosts"))
-            {
-                return true;
-            }
-            if (CanBypassRestrictions(player.UserIDString)) return true;
+            if (CanBypassCosts(player.UserIDString) || CanBypassRestrictions(player.UserIDString)) return true;
             bool foundmoney = false;
             // Check Economics first.  If not in use or balance low, check ServerRewards below
             if (config.Settings.UseEconomics)
@@ -5641,7 +5626,7 @@ namespace Oxide.Plugins
                     PrintMsgL(player, err);
                     return;
                 }
-                var err2 = CheckPlayer(target, config.TPR.UsableIntoBuildingBlocked, CanCraftTPR(target), true, config.TPR.RemoveHostility, "tpr", CanCaveTPR(target));
+                var err2 = CheckPlayer(target, config.TPR.UsableIntoBuildingBlocked, CanCraftTPR(target), true, config.TPR.RemoveHostility, "tpr", CanCaveTPR(target), IsAlly(target.userID, player.userID, config.Home.UseTeams, config.Home.UseClans, config.Home.UseFriends));
                 if (err2 != null)
                 {
                     string error = string.Format(lang.GetMessage("ErrorTPR", this, player.UserIDString), target.displayName, lang.GetMessage(err2, this, player.UserIDString));
@@ -7105,6 +7090,7 @@ namespace Oxide.Plugins
 
             player.PauseFlyHackDetection(5f);
             player.PauseSpeedHackDetection(5f);
+            player.ApplyStallProtection(4f);
             player.UpdateActiveItem(default);
             player.EnsureDismounted();
             player.Server_CancelGesture();
@@ -7128,7 +7114,7 @@ namespace Oxide.Plugins
                 if (!player._limitedNetworking)
                 {
                     player.UpdateNetworkGroup();
-                    player.SendNetworkUpdateImmediate(false);
+                    player.SendNetworkUpdateImmediate();
                 }
 
                 player.ClearEntityQueue(null);
@@ -7396,7 +7382,7 @@ namespace Oxide.Plugins
             return null;
         }
 
-        private string CheckPlayer(BasePlayer player, bool build = false, bool craft = false, bool origin = true, bool removeHostility = false, string mode = "home", bool allowcave = true)
+        private string CheckPlayer(BasePlayer player, bool build = false, bool craft = false, bool origin = true, bool removeHostility = false, string mode = "home", bool allowcave = true, bool mon = true)
         {
             if (CanBypassRestrictions(player.UserIDString)) return null;
             if (config.Settings.Interrupt.Oilrig || config.Settings.Interrupt.Excavator || config.Settings.Interrupt.Monument || mode == "sethome")
@@ -7434,7 +7420,8 @@ namespace Oxide.Plugins
                             }
 
                             if (monname.Contains(":")) monname = monname.Substring(0, monname.IndexOf(":"));
-                            return _("TooCloseToMon", player, _(monname, player));
+                            if (mon) return _("TooCloseToMon", player, _(monname, player));
+                            return _("TooCloseToMonTp", player);
                         }
                     }
                 }
