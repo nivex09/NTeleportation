@@ -20,21 +20,25 @@ using System.Reflection;
 using UnityEngine;
 
 /*
-Added command /deepsea to towns
+Added command /deepsea that functions similarly to Outpost and Bandit commands, differences include:
+- Players require the nteleportation.tpdeepsea permission to use this command
+- If you want to disable this command then set DeepSea -> Command Enabled -> false in the config
+- If you want to remove this command then `Auto Generate DeepSea Location` must be set to `false` first, otherwise it will be automatically re-added.
+Added `Auto Generate DeepSea Location` (true) with the double purpose of 1) generating teleport points, and 2) prevents the command from being re-added when set to false
 Added `Block TPB To Specific Monuments` (none) @dylanstar12
 Added `Allow Sethome On Player-made Boats` (true)
+Added nteleportation.tpdeepsea for players to be able to use the /deepsea command
 Added nteleportation.playerboatsinterruptbypass to bypass when sethome is blocked
 Added nteleportation.playerboatssethomebypass to bypass when sethome is blocked
-Added messages for TPPlayerBoat and HomePlayerBoatNotAllowed
-Added `Custom monument marker dimensions` where you can either
+Added `Custom monument marker dimensions` where you can
 1. Specify height, width and depth for your own custom monument sizes, or 
-2. Use a radius, when the monument marker is a sphere
-This supports regular monuments to some extent, whereas Outpost and Bandit Camp are limited to radius only.
+2. Use a radius when the monument marker is a sphere
+3. Limited support is available for standard monuments
 */
 
 namespace Oxide.Plugins
 {
-    [Info("NTeleportation", "nivex", "1.9.422")]
+    [Info("NTeleportation", "nivex", "1.9.423")]
     [Description("Multiple teleportation systems for admin and players")]
     class NTeleportation : RustPlugin
     {
@@ -1020,7 +1024,7 @@ namespace Oxide.Plugins
             radius = 0f;
             if (DeepSeaManager.ServerFloatingCities.Count == 0) return false;
             DeepSeaManager dsm = PointEntity<DeepSeaManager>.ServerInstance;
-            if (dsm == null || !dsm.IsOpen()) return false;
+            if (dsm == null) return false;
             using var cities = Pool.Get<PooledList<DeepSeaFloatingCity>>();
             foreach (var x in DeepSeaManager.ServerFloatingCities)
             {
