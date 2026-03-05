@@ -38,7 +38,7 @@ Added `Custom monument marker dimensions` where you can
 
 namespace Oxide.Plugins
 {
-    [Info("NTeleportation", "nivex", "1.9.423")]
+    [Info("NTeleportation", "nivex", "1.9.424")]
     [Description("Multiple teleportation systems for admin and players")]
     class NTeleportation : RustPlugin
     {
@@ -4060,6 +4060,36 @@ namespace Oxide.Plugins
                 entity => entity.transform.position + new Vector3(0f, 1.1f, 0f) + (entity.transform.forward * 0.5f)
             );
         }
+
+        private void OnDeepSeaOpened(DeepSeaManager dsm)
+        {
+            deepseaEnabled = AnyDeepSeaPoints();
+            if (!config.Settings.AutoGenDeepSea || deepseaEnabled)
+            {
+                return;
+            }
+            if (GetFloatingCitySpawnPoint(out Vector3 v, out float r))
+            {
+                ServerMgr.Instance.StartCoroutine(SetupDeepSea(v, r));
+            }
+        }
+
+        private void OnDeepSeaClose(DeepSeaManager dsm)
+        {
+            deepseaEnabled = false;
+        }
+
+        private bool AnyDeepSeaPoints()
+        {
+            var sea = GetSettings("deepsea");
+            if (sea == null || !sea.Enabled)
+            {
+                return false;
+            }
+            return sea.Locations.Count > 0;
+        }
+
+        private bool IsDeepSeaTeleportEnabled() => deepseaEnabled && AnyDeepSeaPoints();
 
         private Collider GetColliderFrom(Collider expect, Vector3 a, string text)
         {
