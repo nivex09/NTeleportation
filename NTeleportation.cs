@@ -1,4 +1,4 @@
-//#define DEBUG
+//#define TPDEBUG
 using Facepunch;
 using Network;
 using Newtonsoft.Json;
@@ -20,15 +20,21 @@ using System.Reflection;
 using UnityEngine;
 
 /*
+Added command /deepsea to towns
+Added `Block TPB To Specific Monuments` (none) @dylanstar12
+Added `Allow Sethome On Player-made Boats` (true)
+Added nteleportation.playerboatsinterruptbypass to bypass when sethome is blocked
+Added nteleportation.playerboatssethomebypass to bypass when sethome is blocked
+Added messages for TPPlayerBoat and HomePlayerBoatNotAllowed
 Added `Custom monument marker dimensions` where you can either
 1. Specify height, width and depth for your own custom monument sizes, or 
-2. Use a radius instead, when the monument marker is sphere shaped 
-This supports regular monuments to some extent, where Outpost and Bandit Camp are limited to radius modifications only. Outpost and Bandit Camp must use those exact names, too.
+2. Use a radius, when the monument marker is a sphere
+This supports regular monuments to some extent, whereas Outpost and Bandit Camp are limited to radius only.
 */
 
 namespace Oxide.Plugins
 {
-    [Info("NTeleportation", "nivex", "1.9.415")]
+    [Info("NTeleportation", "nivex", "1.9.422")]
     [Description("Multiple teleportation systems for admin and players")]
     class NTeleportation : RustPlugin
     {
@@ -94,6 +100,7 @@ namespace Oxide.Plugins
         private List<PrefabInfo> monuments = new();
         private bool outpostEnabled;
         private bool banditEnabled;
+        private bool deepseaEnabled;
 
         private class PrefabInfo
         {
@@ -131,6 +138,7 @@ namespace Oxide.Plugins
 
                 return v.x <= extents.x && v.x > -extents.x && v.y <= extents.y && v.y > -extents.y && v.z <= extents.z && v.z > -extents.z;
             }
+            public string Formatted() => sphere ? $"radius: {extents.Max()}" : $"extents: {extents}";
         }
 
         #region Configuration
@@ -337,28 +345,35 @@ namespace Oxide.Plugins
             [JsonProperty("radius")]
             public float radius = 0f;
 
+            [JsonProperty("enabled")]
             public bool enabled;
 
-            public bool Get(out float x, out float y, out float z, out float radius)
+            public bool GetRadius(out float r)
+            {
+                r = (!enabled ? 0f : (radius > 0 ? radius : Mathf.Max(x, y, z)));
+                return r > 0f;
+            }
+
+            public bool GetRadiusOrSize(out float x, out float y, out float z, out float r)
             {
                 if (enabled)
                 {
                     if (this.x != 0 && this.z != 0)
                     {
+                        r = 0f;
                         x = this.x;
                         y = this.y;
                         z = this.z;
-                        radius = 0f;
                         return true;
                     }
-                    if (this.radius != 0)
+                    if (this.radius > 0)
                     {
                         x = y = z = 0f;
-                        radius = this.radius;
+                        r = this.radius;
                         return true;
                     }
                 }
-                x = y = z = radius = 0f;
+                x = y = z = r = 0f;
                 return false;
             }
         }
@@ -477,6 +492,9 @@ namespace Oxide.Plugins
             [JsonProperty(PropertyName = "Wipe On Upgrade Or Change")]
             public bool WipeOnUpgradeOrChange = true;
 
+            [JsonProperty(PropertyName = "Auto Generate DeepSea Location")]
+            public bool AutoGenDeepSea = true;
+
             [JsonProperty(PropertyName = "Auto Generate Outpost Location")]
             public bool AutoGenOutpost = true;
 
@@ -537,6 +555,9 @@ namespace Oxide.Plugins
 
         public class TPBSettings
         {
+            [JsonProperty(PropertyName = "Block TPB To Specific Monuments", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public List<string> BlockedMonuments = new();
+
             [JsonProperty(PropertyName = "VIP Countdowns", ObjectCreationHandling = ObjectCreationHandling.Replace)]
             public Dictionary<string, int> Countdowns = new() { { ConfigDefaultPermVip, 0 } };
 
@@ -584,6 +605,9 @@ namespace Oxide.Plugins
 
             [JsonProperty(PropertyName = "Allow Sethome On Tugboats")]
             public bool AllowTugboats = true;
+
+            [JsonProperty(PropertyName = "Allow Sethome On Player-made Boats")]
+            public bool AllowPlayerBoats = true;
 
             [JsonProperty(PropertyName = "Allow TPB")]
             public bool AllowTPB = true;
@@ -655,7 +679,7 @@ namespace Oxide.Plugins
             public bool AllowAboveFoundation = true;
 
             [JsonProperty(PropertyName = "Allow Deep Sea")]
-            public bool DeepSea = false;
+            public bool DeepSea = true;
 
             [JsonProperty(PropertyName = "Check If Home Is Valid On Listhomes")]
             public bool CheckValidOnList = false;
@@ -741,7 +765,7 @@ namespace Oxide.Plugins
             public bool AllowTPB = true;
 
             [JsonProperty(PropertyName = "Allow Deep Sea")]
-            public bool DeepSea = false;
+            public bool DeepSea = true;
 
             [JsonProperty(PropertyName = "Use Blocked Users")]
             public bool UseBlockedUsers;
@@ -818,8 +842,10 @@ namespace Oxide.Plugins
             [JsonProperty(PropertyName = "Allow Cave")]
             public bool AllowCave;
 
-            [JsonProperty(PropertyName = "Allow Deep Sea")]
-            public bool DeepSea = false;
+            [JsonProperty(PropertyName = "Allow Deep Sea", NullValueHandling = NullValueHandling.Ignore)]
+            public bool? _DeepSea = true;
+
+            internal bool DeepSea => _DeepSea.HasValue ? _DeepSea.Value : true;
 
             [JsonProperty(PropertyName = "Cooldown")]
             public int Cooldown = 600;
@@ -904,12 +930,21 @@ namespace Oxide.Plugins
             public Dictionary<string, TownSettings> DynamicCommands = DefaultCommands;
         }
 
-        private static Dictionary<string, TownSettings> DefaultCommands = new()
+        private void TryAddDeepSeaTown()
+        {
+            if (config.Settings.AutoGenDeepSea && !config.DynamicCommands.ContainsKey("DeepSea"))
+            {
+                config.DynamicCommands.Add("DeepSea", new());
+            }
+        }
+
+        private static Dictionary<string, TownSettings> DefaultCommands = new(StringComparer.OrdinalIgnoreCase)
         {
             ["Town"] = new() { Random = false },
             ["Island"] = new() { AllowTPB = false },
-            ["Outpost"] = new(),
-            ["Bandit"] = new(),
+            ["Outpost"] = new() { _DeepSea = true },
+            ["Bandit"] = new() { _DeepSea = true },
+            ["DeepSea"] = new() { _DeepSea = null },
         };
 
         public void InitializeDynamicCommands()
@@ -936,7 +971,10 @@ namespace Oxide.Plugins
                     }
                     else continue;
                 }
-
+                else if (entry.Key.Equals("deepsea", StringComparison.OrdinalIgnoreCase))
+                {
+                    deepseaEnabled = true;
+                }
                 entry.Value.Command = entry.Key;
                 RegisterCommand(entry.Key, nameof(CommandCustom));
             }
@@ -969,6 +1007,39 @@ namespace Oxide.Plugins
             return false;
         }
 
+        private bool IsDeepSeaOpen()
+        {
+            DeepSeaManager dsm = PointEntity<DeepSeaManager>.ServerInstance;
+            if (dsm == null || !dsm.IsOpen()) return false;
+            return true;
+        }
+
+        private bool GetFloatingCitySpawnPoint(out Vector3 v, out float radius)
+        {
+            v = Vector3.zero;
+            radius = 0f;
+            if (DeepSeaManager.ServerFloatingCities.Count == 0) return false;
+            DeepSeaManager dsm = PointEntity<DeepSeaManager>.ServerInstance;
+            if (dsm == null || !dsm.IsOpen()) return false;
+            using var cities = Pool.Get<PooledList<DeepSeaFloatingCity>>();
+            foreach (var x in DeepSeaManager.ServerFloatingCities)
+            {
+                if (x != null && !x.IsDestroyed && x.OwnerID == 0)
+                {
+                    cities.Add(x);
+                }
+            }
+            if (cities.Count == 0)
+            {
+                return false;
+            }
+            DeepSeaFloatingCity city = cities.GetRandom();
+            OBB obb = city.WorldSpaceBounds();
+            v = obb.position;
+            radius = obb.extents.Max();
+            return true;
+        }
+
         protected override void LoadConfig()
         {
             base.LoadConfig();
@@ -978,7 +1049,10 @@ namespace Oxide.Plugins
                 Config.Settings.Converters = new JsonConverter[] { new UnityVector3Converter() };
                 config = Config.ReadObject<Configuration>();
                 if (config == null) LoadDefaultConfig();
+                var sea = GetSettings("deepsea");
+                if (sea != null) sea._DeepSea = null;
                 canSaveConfig = true;
+                TryAddDeepSeaTown();
                 SaveConfig();
             }
             catch (JsonException ex)
@@ -986,10 +1060,11 @@ namespace Oxide.Plugins
                 Puts(ex.ToString());
                 LoadDefaultConfig();
             }
-            config.Settings.ReappearEffects.Remove("");
-            config.Settings.DisappearEffects.Remove("");
-            config.TPR.TeleportRequestEffects.Remove("");
-            config.TPR.TeleportAcceptEffects.Remove("");
+            config.Settings.ReappearEffects.RemoveAll(string.IsNullOrWhiteSpace);
+            config.Settings.DisappearEffects.RemoveAll(string.IsNullOrWhiteSpace);
+            config.TPR.TeleportRequestEffects.RemoveAll(string.IsNullOrWhiteSpace);
+            config.TPR.TeleportAcceptEffects.RemoveAll(string.IsNullOrWhiteSpace);
+            config.Settings.TPB.BlockedMonuments.RemoveAll(string.IsNullOrWhiteSpace);
         }
 
         private bool canSaveConfig = true;
@@ -1057,10 +1132,14 @@ namespace Oxide.Plugins
         {
             public class Entry
             {
+                internal bool IsPlayerBoat => BoatType == BoatType.PlayerBoat;
+                internal bool IsTugboat => BoatType == BoatType.Tugboat;
                 public Vector3 Position;
                 public BaseNetworkable Entity;
                 public bool isEntity => !Entity.IsKilled();
                 public bool wasEntity;
+                public BoatType BoatType;
+                public Boat Boat;
                 public Entry() { }
                 public Entry(Vector3 Position)
                 {
@@ -1070,21 +1149,58 @@ namespace Oxide.Plugins
                 {
                     if (isEntity)
                     {
-                        return Entity.transform.position + Position;
+                        return Entity.transform.TransformPoint(Position);
                     }
                     return Position;
                 }
+                public bool RemoveSteeringWheel(SteeringWheel sw)
+                {
+                    Position = sw.transform.TransformPoint(Position);
+                    wasEntity = false;
+                    Entity = null;
+                    return true;
+                }
+                public bool SetSteeringWheel(SteeringWheel sw)
+                {
+                    Position = sw.transform.InverseTransformPoint(Position);
+                    wasEntity = true;
+                    Entity = sw;
+                    return true;
+                }
             }
+
+            public enum BoatType { PlayerBoat, Tugboat }
 
             public class Boat
             {
+                internal bool IsTugboat => BoatType == BoatType.Tugboat;
+                internal bool IsPlayerBoat => BoatType == BoatType.PlayerBoat;
+                public BoatType BoatType = BoatType.Tugboat;
                 public ulong Value;
                 public Vector3 Offset;
+                internal Entry Entry;
                 public Boat() { }
                 public Boat(Entry entry)
                 {
+                    Entry = entry;
+                    BoatType = entry.BoatType;
                     Offset = entry.Position;
                     Value = entry.Entity.net.ID.Value;
+                }
+                public void RemoveSteeringWheel(BaseNetworkable ent)
+                {
+                    Offset = ent.transform.TransformPoint(Offset);
+                    Value = 0;
+                }
+                public void UpdateSteeringWheel(BaseNetworkable ent)
+                {
+                    Offset = ent.transform.InverseTransformPoint(Offset);
+                    Value = ent.net.ID.Value;
+                }
+                public bool CanAttachSteeringWheel(ulong value)
+                {
+                    if (!IsPlayerBoat || Entry == null) return false;
+                    return Value == 0 || Value == value && Entry.Entity == null;
                 }
             }
 
@@ -1097,11 +1213,9 @@ namespace Oxide.Plugins
             [JsonProperty("t")]
             public TeleportData Teleports = new();
 
-            [JsonIgnore]
-            private Dictionary<string, Entry> Cache = new();
+            internal Dictionary<string, Entry> Cache = new();
 
-            [JsonIgnore]
-            public Dictionary<string, Entry> Locations
+            internal Dictionary<string, Entry> Locations
             {
                 get
                 {
@@ -1126,14 +1240,25 @@ namespace Oxide.Plugins
             {
                 foreach (var (key, boat) in boats.ToList())
                 {
+                    if (boat.Value == 0)
+                    {
+                        continue;
+                    }
                     var entity = BaseNetworkable.serverEntities.Find(new(boat.Value));
-                    if (entity.IsKilled()) continue;
-                    Cache[key] = new()
+                    if (entity.IsKilled())
+                    {
+                        continue;
+                    }
+                    var entry = new Entry()
                     {
                         Position = boat.Offset,
                         wasEntity = true,
-                        Entity = entity
+                        Entity = entity,
+                        Boat = boat,
+                        BoatType = entity is Tugboat ? BoatType.Tugboat : BoatType.PlayerBoat
                     };
+                    boat.Entry = entry;
+                    Cache[key] = entry;
                 }
             }
 
@@ -1142,12 +1267,26 @@ namespace Oxide.Plugins
                 return Locations.TryGetValue(key, out homeEntry);
             }
 
+            public bool TryGetValue(SteeringWheel sw, out Entry homeEntry)
+            {
+                foreach (var pair in Locations)
+                {
+                    if (pair.Value.Entity == sw)
+                    {
+                        homeEntry = pair.Value;
+                        return true;
+                    }
+                }
+                homeEntry = null;
+                return false;
+            }
+
             public void Set(string key, Entry homeEntry)
             {
                 Locations[key] = homeEntry;
                 if (homeEntry.isEntity)
                 {
-                    boats[key] = new(homeEntry);
+                    boats[key] = homeEntry.Boat = new(homeEntry);
                 }
                 else buildings[key] = homeEntry.Get();
             }
@@ -1251,6 +1390,7 @@ namespace Oxide.Plugins
                 "Crow's Nest",
                 "Ferry Terminal",
                 "Fishing Village",
+                "Floating City",
                 "Gas Station",
                 "Giant Excavator Pit",
                 "Harbor",
@@ -1301,6 +1441,7 @@ namespace Oxide.Plugins
             var en = new Dictionary<string, string>
             {
                 {"ErrorTPR", "Teleporting to {0} is blocked ({1})"},
+                {"ErrorRedacted","The reason is hidden to protect the target's location"},
                 {"AdminTP", "You teleported to {0}!"},
                 {"AdminTPTarget", "{0} teleported to you!"},
                 {"AdminTPPlayers", "You teleported {0} to {1}!"},
@@ -1340,6 +1481,8 @@ namespace Oxide.Plugins
                 {"HomeMaxLocations", "Unable to set your home here, you have reached the maximum of {0} homes!"},
                 {"HomeQuota", "You have set {0} of the maximum {1} homes!"},
                 {"HomeTugboatNotAllowed", "You are not allowed to sethome on tugboats."},
+                {"HomePlayerBoatNotAllowed", "You are not allowed to sethome on player boats."},
+                {"HomeSteeringWheelRequired", "You must deploy a steering wheel first."},
                 {"HomeTPStarted", "Teleporting to your home {0} in {1} seconds!"},
                 {"PayToTown", "Standard payment of {0} applies to all {1} teleports!"},
                 {"PayToTPR", "Standard payment of {0} applies to all tprs!"},
@@ -1400,6 +1543,7 @@ namespace Oxide.Plugins
                 {"TPTooHot", "You're too hot to teleport!"},
                 {"TPBoat", "You can't teleport while on a boat!"},
                 {"TPTugboat", "You can't teleport while on a tugboat!"},
+                {"TPPlayerBoat", "You can't teleport while on a player boat!"},
                 {"TPHostile", "Can't teleport to outpost or bandit when hostile!"},
                 {"TPJunkpile", "You can't teleport from a junkpile!"},
                 {"HostileTimer", "Teleport available in {0} minutes."},
@@ -1428,14 +1572,16 @@ namespace Oxide.Plugins
                 {"TPBlockedItem", "You can't teleport while carrying: {0}!"},
                 {"TPHomeSafeZoneOnly", "You can only teleport home from within a safe zone!" },
                 {"TooCloseToMon", "You can't teleport so close to the {0}!"},
+                {"TooCloseToMonTp", "You can't teleport so close to a monument!"},
+                {"TooCloseToMonTpb", "You can't teleport back to the {0}!"},
                 {"TooCloseToCave", "You can't teleport so close to a cave!"},
                 {"HomeTooCloseToCave", "You can't set home so close to a cave!"},
                 {"HomeTooCloseToMon", "You can't set home so close to a monument!"},
-                {"TooCloseToMonTp", "You can't teleport so close to a monument!"},
                 {"CannotTeleportFromHome", "You must leave your base to be able to teleport!"},
                 {"WaitGlobalCooldown", "You must wait {0} on your global teleport cooldown!" },
                 {"DM_TownTP", "You teleported to {0}!"},
                 {"DM_TownTPNoLocation", "<color=yellow>{0}</color> location is currently not set!"},
+                {"DM_TownTPNotOpened", "<color=yellow>{0}</color> is currently not open!"},
                 {"DM_TownTPDisabled", "<color=yellow>{0}</color> is currently disabled in config file!"},
                 {"DM_TownTPLocation", "You have set the <color=yellow>{0}</color> location to {1}!"},
                 {"DM_TownTPCreated", "You have created the command: <color=yellow>{0}</color>"},
@@ -1822,6 +1968,7 @@ namespace Oxide.Plugins
             var ru = new Dictionary<string, string>
             {
                 {"ErrorTPR", "Телепорт к {0} блокирован ({1})"},
+                {"ErrorRedacted","Причина скрыта в целях безопасности"},
                 {"AdminTP", "Вы телепортированы к {0}!"},
                 {"AdminTPTarget", "{0} телепортировал вас!"},
                 {"AdminTPPlayers", "Вы телепортировали {0} к {1}!"},
@@ -1861,6 +2008,7 @@ namespace Oxide.Plugins
                 {"HomeMaxLocations", "Невозможно установить здесь ваш дом, вы достигли лимита в {0} домов!"},
                 {"HomeQuota", "Вы установили {0} из {1} максимально возможных домов!"},
                 {"HomeTugboatNotAllowed", "Установка дома на буксирах запрещена!"},
+                {"HomePlayerBoatNotAllowed", "Вы не можете установить дом на лодке, сделанной игроками."},
                 {"HomeTPStarted", "Телепортация в ваш дом {0} через {1} секунд!"},
                 {"PayToTown", "Стандартный платеж {0} распространяется на все телепорты в город!"},
                 {"PayToTPR", "Стандартный платеж {0} распространяется на все tpr'ы!"},
@@ -1920,6 +2068,7 @@ namespace Oxide.Plugins
                 {"TPTooCold", "Вам слишком холодно для телепортации!"},
                 {"TPTooHot", "Вам слишком жарко для телепортации!"},
                 {"TPTugboat", "Вы не можете телепортироваться на этой лодке!"},
+                {"TPPlayerBoat", "Вы не можете телепортироваться на лодке, сделанной игроками!"},
                 {"TPBoat", "Вы не можете телепортироваться находясь на лодке!"},
                 {"TPHostile", "Вы не можете телепортироваться в Город NPC или Лагерь бандитов пока враждебны!"},
                 {"TPJunkpile", "Вы не можете телепортироваться с кучи мусора"},
@@ -1948,6 +2097,7 @@ namespace Oxide.Plugins
                 {"TPBlockedItem", "Вы не можете телепортироваться пока несёте: {0}!"},
                 {"TooCloseToMon", "Вы не можете телепортироваться так близко к {0}!"},
                 {"TooCloseToMonTp", "Вы не можете телепортироваться так близко к памятнику!"},
+                {"TooCloseToMonTpb", "Вы не можете телепортироваться обратно в {0}!"},
                 {"TPHomeSafeZoneOnly", "Вы можете телепортироваться домой только из безопасной зоны!" },
                 {"TooCloseToCave", "Вы не можете телепортироваться так близко к пещере!"},
                 {"HomeTooCloseToCave", "Вы не можете сохранить местоположение в качестве дома так близко к пещере!"},
@@ -2341,6 +2491,7 @@ namespace Oxide.Plugins
             var uk = new Dictionary<string, string>
             {
                 {"ErrorTPR", "Телепорт до {0} блоковано ({1})"},
+                {"ErrorRedacted","Причину приховано з міркувань безпеки"},
                 {"AdminTP", "Ви телепортовані до {0}!"},
                 {"AdminTPTarget", "{0} телепортував вас!"},
                 {"AdminTPPlayers", "Ви телепортували {0} до {1}!"},
@@ -2380,6 +2531,7 @@ namespace Oxide.Plugins
                 {"HomeMaxLocations", "Неможливо встановити тут ваш будинок, ви досягли ліміту в {0} будинків!"},
                 {"HomeQuota", "Ви встановили {0} з {1} максимально можливих будинків!"},
                 {"HomeTugboatNotAllowed", "You are not allowed to sethome on tugboats."},
+                {"HomePlayerBoatNotAllowed", "Ви не можете встановити /sethome на човні, зробленому гравцями."},
                 {"HomeTPStarted", "Телепортація до вашого будинку {0} через {1} секунд!"},
                 {"PayToTown", "Стандартний платіж {0} поширюється на всі телепорти до міста!"},
                 {"PayToTPR", "Стандартний платіж {0} поширюється на всі tpr'и!"},
@@ -2439,6 +2591,7 @@ namespace Oxide.Plugins
                 {"TPTooCold", "Вам надто холодно для телепортації!"},
                 {"TPTooHot", "Вам дуже жарко для телепортації!"},
                 {"TPTugboat", "Вы не можете телепортироваться на этой лодке!"},
+                {"TPPlayerBoat", "Ви не можете телепортуватися на човні, зробленому гравцями!"},
                 {"TPBoat", "Ви не можете телепортуватися, перебуваючи на човні!"},
                 {"TPHostile", "Ви не можете телепортуватися в Місто NPC або Табір бандитів, поки ворожі!"},
                 {"TPJunkpile", "Ви не можете телепортуватися з купи сміття"},
@@ -2467,6 +2620,7 @@ namespace Oxide.Plugins
                 {"TPBlockedItem", "Ви не можете телепортуватися поки що несете: {0}!"},
                 {"TooCloseToMon", "Ви не можете телепортуватися так близько до {0}!"},
                 {"TooCloseToMonTp", "Ви не можете телепортувати так близько до пам’ятника!"},
+                {"TooCloseToMonTpb", "Ви не можете телепортуватися назад до {0}!"},
                 {"TPHomeSafeZoneOnly", "Ви можете телепортуватися додому лише з безпечної зони!" },
                 {"TooCloseToCave", "Ви не можете телепортуватись так близько до печери!"},
                 {"HomeTooCloseToCave", "Ви не можете зберегти розташування як будинок так близько до печери!"},
@@ -2861,6 +3015,8 @@ namespace Oxide.Plugins
 
         private void Init()
         {
+            Unsubscribe(nameof(OnEntityKill));
+            Unsubscribe(nameof(OnEntitySpawned));
             Unsubscribe(nameof(OnPlayerSleep));
             Unsubscribe(nameof(OnPlayerRespawn));
             Unsubscribe(nameof(OnPlayerViolation));
@@ -2907,7 +3063,8 @@ namespace Oxide.Plugins
             dataHome = GetFile("Home");
             try { _Home = dataHome.ReadObject<Dictionary<ulong, HomeData>>(); } catch (Exception ex) { Puts("Home datafile: {0}", ex); }
             if (_Home == null) { _Home = new(); changedHome = true; }
-            if (!config.Home.AllowTugboats) _Home.Values.ToList().ForEach(homeData => { if (homeData?.boats?.Count > 0) { homeData.boats.Clear(); changedHome = true; } });
+            if (!config.Home.AllowTugboats) RemoveBoat(HomeData.BoatType.Tugboat);
+            if (!config.Home.AllowPlayerBoats) RemoveBoat(HomeData.BoatType.PlayerBoat);
 
             dataTPT = GetFile("TPT");
             try { TPT = dataTPT.ReadObject<Dictionary<string, List<string>>>(); } catch { }
@@ -2958,6 +3115,8 @@ namespace Oxide.Plugins
             permission.RegisterPermission("nteleportation.globalcooldownvip", this);
             permission.RegisterPermission("nteleportation.tugboatsinterruptbypass", this);
             permission.RegisterPermission("nteleportation.tugboatssethomebypass", this);
+            permission.RegisterPermission("nteleportation.playerboatsinterruptbypass", this);
+            permission.RegisterPermission("nteleportation.playerboatssethomebypass", this);
             permission.RegisterPermission(PermAdmin, this);
             permission.RegisterPermission(PermFoundationCheck, this);
             permission.RegisterPermission(PermDeleteHome, this);
@@ -2996,6 +3155,27 @@ namespace Oxide.Plugins
             foreach (var entry in config.DynamicCommands)
             {
                 RegisterCommand(entry.Key, entry.Value, false);
+            }
+        }
+
+        private void RemoveBoat(HomeData.BoatType type)
+        {
+            using var boats = Pool.Get<PooledList<KeyValuePair<string, HomeData.Boat>>>();
+            foreach (var homeData in _Home.Values)
+            {
+                if (homeData?.boats?.Count > 0)
+                {
+                    boats.Clear();
+                    boats.AddRange(homeData.boats);
+                    foreach (var boat in boats)
+                    {
+                        if (type == HomeData.BoatType.Tugboat ? boat.Value.IsTugboat : boat.Value.IsPlayerBoat)
+                        {
+                            homeData.boats.Remove(boat.Key);
+                            changedHome = true;
+                        }
+                    }
+                }
             }
         }
 
@@ -3187,8 +3367,16 @@ namespace Oxide.Plugins
             return false;
         }
 
+        private bool subPlayerBoats;
         void OnServerInitialized()
         {
+            subPlayerBoats = config.Home.AllowPlayerBoats || permission.GetPermissionUsers("nteleportation.playerboatssethomebypass").Length > 0;
+            if (subPlayerBoats)
+            {
+                Subscribe(nameof(OnEntitySpawned));
+                Subscribe(nameof(OnEntityKill));
+            }
+
             if (config.Settings.Interrupt.OnEntityTakeDamage)
             {
                 Subscribe(nameof(OnEntityTakeDamage));
@@ -3637,7 +3825,7 @@ namespace Oxide.Plugins
                 }
                 if (config.Settings.MonumentsToExclude.Exists(v => name.Contains(v, CompareOptions.OrdinalIgnoreCase)))
                 {
-#if DEBUG
+#if TPDEBUG
                     Puts("Skipped {0} {1} {2}", name, position, rotation);
 #endif
                     continue;
@@ -3661,421 +3849,212 @@ namespace Oxide.Plugins
                 if (objname.Contains("cave"))
                 {
                     name += UnityEngine.Random.Range(1000, 9999);
-#if DEBUG
+#if TPDEBUG
                     Puts($"Adding Cave: {name}, pos: {position}");
 #endif
                     caves[name] = position;
                 }
                 else if (config.Settings.Outpost.Exists(objname.Contains))
                 {
-                    yield return SetupOutpost(monument);
+                    yield return SetupOutpost(monument.transform.position, monument.Bounds.extents.Max());
                 }
                 else if (config.Settings.Bandit.Exists(objname.Contains))
                 {
-                    yield return SetupBandit(monument);
+                    yield return SetupBandit(monument.transform.position, monument.Bounds.extents.Max());
                 }
                 else
                 {
                     yield return CalculateMonumentSize(position, rotation, monument.Bounds, string.IsNullOrEmpty(name) ? objname : name, objname);
                 }
             }
+            if (GetFloatingCitySpawnPoint(out Vector3 v, out float r))
+            {
+                yield return SetupDeepSea(v, r);
+            }
             _cmcCompleted = true;
             _cmc = null;
         }
 
-        private void RemoveNearBuildingBlocks(List<BaseEntity> ents)
+        private void RemoveNearBuildingBlocks(List<BaseEntity> ents, float r = 3f)
         {
-            using var blocks = Pool.Get<PooledList<Vector3>>();
+            if (ents == null || ents.Count == 0)
+                return;
+
+            var r2 = r * r;
+
+            using var blockPositions = Pool.Get<PooledList<Vector3>>();
 
             foreach (var ent in ents)
             {
-                BuildingBlock block = ent as BuildingBlock;
-                if (block != null && !block.IsDestroyed)
-                {
-                    blocks.Add(block.transform.position);
-                }
+                if (ent is BuildingBlock { IsDestroyed: false } b)
+                    blockPositions.Add(b.transform.position);
             }
 
-            for (int i = ents.Count - 1; i >= 0; i--)
+            for (var i = ents.Count - 1; i >= 0; i--)
             {
-                BaseEntity entity = ents[i];
-
-                if (entity.IsKilled())
+                var e = ents[i];
+                if (e == null || e.IsDestroyed)
                 {
                     ents.RemoveAt(i);
                     continue;
                 }
 
-                bool shouldRemove = false;
-
-                foreach (var blockPos in blocks)
-                {
-                    if (entity.Distance(blockPos) <= 3f)
-                    {
-                        shouldRemove = true;
-                        break;
-                    }
-                }
-
-                if (shouldRemove)
-                {
-                    ents.RemoveAt(i);
+                if (e is BuildingBlock)
                     continue;
+
+                var v = e.transform.position;
+                if (IsNearAnyBlock(v) || IsNearAnyOtherEntity(e, v))
+                    ents.RemoveAt(i);
+            }
+
+            bool IsNearAnyBlock(in Vector3 a)
+            {
+                if (blockPositions.Count == 0)
+                    return false;
+
+                foreach (var b in blockPositions)
+                {
+                    if ((a - b).sqrMagnitude <= r2)
+                        return true;
                 }
 
+                return false;
+            }
+
+            bool IsNearAnyOtherEntity(BaseEntity e, in Vector3 a)
+            {
                 foreach (var other in ents)
                 {
-                    if (other.IsKilled() || other == entity || other is BaseChair)
-                    {
+                    if (other == null || other.IsDestroyed || other == e || other is BaseChair)
                         continue;
-                    }
 
-                    if (entity.Distance(other.transform.position) <= 3f)
-                    {
-                        shouldRemove = true;
-                        break;
-                    }
+                    if ((a - other.transform.position).sqrMagnitude <= r2)
+                        return true;
                 }
 
-                if (shouldRemove)
-                {
-                    ents.RemoveAt(i);
-                }
+                return false;
             }
         }
 
-        private IEnumerator SetupOutpost(PrefabInfo mi)
+        private IEnumerator SetupLocation(string key, string displayName, bool autoGen, Action disableTarget, Vector3 vector, float radius, Func<BaseEntity, Vector3> getEntityPosition, Func<BaseEntity, Vector3> getChairPosition)
         {
-            var outpost = GetSettings("outpost");
+            var settings = GetSettings(key);
 
-            if (outpost == null)
+            if (settings == null)
             {
-                outpostEnabled = false;
+                disableTarget();
                 yield break;
             }
 
-            var radius = mi.extents.Max();
-
-            if (config.Settings.AutoGenOutpost && outpost.Location != Vector3.zero && outpost.Locations.Exists(a => OutOfRange(mi.position, a, radius, config.Settings.AutoGenOutpost)))
+            if (config.Settings.Dimensions.TryGetValue(key, out var mmd) && mmd.GetRadius(out float r))
             {
-#if DEBUG
-                Puts("Invalid Outpost location detected");
-#endif
-                outpost.Location = Vector3.zero;
-                outpost.Locations = new List<Vector3>();
+                radius = r;
             }
-            if (config.Settings.AutoGenOutpost && outpost.Location == Vector3.zero)
+
+            if (autoGen && settings.Location != Vector3.zero && settings.Locations.Exists(a => OutOfRange(vector, a, radius, autoGen)))
             {
-#if DEBUG
-                Puts("  Looking for Outpost target");
+#if TPDEBUG
+                Puts($"Invalid {displayName} location detected");
 #endif
-                bool changedOutpost = false;
+                settings.Location = Vector3.zero;
+                settings.Locations = new List<Vector3>();
+            }
+
+            if (autoGen && settings.Location == Vector3.zero)
+            {
+#if TPDEBUG
+                Puts($"  Looking for {displayName} target");
+#endif
+                bool changed = false;
                 using var ents = Pool.Get<PooledList<BaseEntity>>();
-                Vis.Entities(mi.position, radius, ents);
+                Vis.Entities(vector, radius, ents);
                 RemoveNearBuildingBlocks(ents);
+
                 foreach (BaseEntity entity in ents)
                 {
                     if (entity.IsKilled() || config.Settings.BlockedPrefabs.Contains(entity.ShortPrefabName) || config.Settings.BlockedPrefabs.Contains(entity.GetType().Name))
                     {
                         continue;
                     }
-                    if (entity.OwnerID.IsSteamId() || OutOfRange(mi.position, entity.transform.position, radius, entity is BaseChair))
+
+                    if (entity.OwnerID.IsSteamId() || OutOfRange(vector, entity.transform.position, radius, entity is BaseChair))
                     {
                         continue;
                     }
+
+                    Vector3 position;
+
                     if (entity.ShortPrefabName == "piano.deployed.static" || entity.ShortPrefabName == "recycler_static" || entity is NPCMissionProvider || entity is Workbench)
                     {
-                        var position = entity.transform.position + entity.transform.forward + new Vector3(0f, 1f, 0f);
-                        if (position.y < TerrainMeta.HeightMap.GetHeight(position))
-                        {
-                            continue;
-                        }
-                        position.y += 1f; 
-                        outpost.Location = position;
-                        if (!outpost.Locations.Contains(position)) outpost.Locations.Add(position);
-                        changedOutpost = true;
-#if DEBUG
-                        Puts("  Adding Outpost target {0}", position);
-#endif
+                        position = getEntityPosition(entity);
                     }
                     else if (entity is BaseChair)
                     {
-                        var position = (entity.transform.position + new Vector3(0f, 0.1f)) + entity.transform.right + new Vector3(0f, 1f, 0f);
-                        if (position.y < TerrainMeta.HeightMap.GetHeight(position))
-                        {
-                            continue;
-                        }
-                        outpost.Location = position;
-                        if (!outpost.Locations.Contains(position)) outpost.Locations.Add(position);
-                        changedOutpost = true;
-#if DEBUG
-                        Puts("  Adding Outpost target {0}", position);
-#endif
+                        position = getChairPosition(entity);
                     }
+                    else
+                    {
+                        continue;
+                    }
+
+                    if (position.y < TerrainMeta.HeightMap.GetHeight(position))
+                    {
+                        continue;
+                    }
+
+                    settings.Location = position;
+                    if (!settings.Locations.Contains(position))
+                    {
+                        settings.Locations.Add(position);
+                    }
+
+                    changed = true;
+
+#if TPDEBUG
+                    Puts($"  Adding {displayName} target {position}");
+#endif
                 }
-                if (changedOutpost) SaveConfig();
+
+                if (changed)
+                {
+                    SaveConfig();
+                }
             }
 
-            if (outpost.Location == Vector3.zero)
+            if (settings.Location == Vector3.zero)
             {
-                outpostEnabled = false;
+                disableTarget();
             }
-            else if (!outpost.Locations.Contains(outpost.Location))
+            else if (!settings.Locations.Contains(settings.Location))
             {
-                outpost.Locations.Add(outpost.Location);
+                settings.Locations.Add(settings.Location);
             }
 
             yield return null;
         }
 
-        private IEnumerator SetupOutpost(MonumentInfo monument)
+        private IEnumerator SetupBandit(Vector3 vector, float radius)
         {
-            var outpost = GetSettings("outpost");
-
-            if (outpost == null)
-            {
-                outpostEnabled = false;
-                yield break;
-            }
-
-            if (config.Settings.AutoGenOutpost && outpost.Location != Vector3.zero && outpost.Locations.Exists(a => OutOfRange(monument, a, config.Settings.AutoGenOutpost)))
-            {
-#if DEBUG
-                Puts("Invalid Outpost location detected");
-#endif
-                outpost.Location = Vector3.zero;
-                outpost.Locations = new List<Vector3>();
-            }
-            if (config.Settings.AutoGenOutpost && outpost.Location == Vector3.zero)
-            {
-#if DEBUG
-                Puts("  Looking for Outpost target");
-#endif
-                bool changedOutpost = false;
-                using var ents = Pool.Get<PooledList<BaseEntity>>();
-                float radius = monument.Bounds.size.Max();
-                if (config.Settings.Dimensions.TryGetValue("Outpost", out var mmd) && mmd.enabled && mmd.radius != 0)
-                {
-                    radius = mmd.radius;
-                }
-                Vis.Entities(monument.transform.position, radius, ents);
-                RemoveNearBuildingBlocks(ents);
-                foreach (BaseEntity entity in ents)
-                {
-                    if (entity.IsKilled() || config.Settings.BlockedPrefabs.Contains(entity.ShortPrefabName) || config.Settings.BlockedPrefabs.Contains(entity.GetType().Name))
-                    {
-                        continue;
-                    }
-                    if (entity.OwnerID.IsSteamId() || OutOfRange(monument, entity.transform.position, entity is BaseChair))
-                    {
-                        continue;
-                    }
-                    if (entity.ShortPrefabName == "piano.deployed.static" || entity.ShortPrefabName == "recycler_static" || entity is NPCMissionProvider || entity is Workbench)
-                    {
-                        var position = entity.transform.position + entity.transform.forward + new Vector3(0f, 1f, 0f);
-                        if (position.y < TerrainMeta.HeightMap.GetHeight(position))
-                        {
-                            continue;
-                        }
-                        outpost.Location = position;
-                        if (!outpost.Locations.Contains(position)) outpost.Locations.Add(position);
-                        changedOutpost = true;
-#if DEBUG
-                        Puts("  Adding Outpost target {0}", position);
-#endif
-                    }
-                    else if (entity is BaseChair)
-                    {
-                        var position = (entity.transform.position + new Vector3(0f, 0.1f)) + entity.transform.right + new Vector3(0f, 1f, 0f);
-                        if (position.y < TerrainMeta.HeightMap.GetHeight(position))
-                        {
-                            continue;
-                        }
-                        outpost.Location = position;
-                        if (!outpost.Locations.Contains(position)) outpost.Locations.Add(position);
-                        changedOutpost = true;
-#if DEBUG
-                        Puts("  Adding Outpost target {0}", position);
-#endif
-                    }
-                }
-                if (changedOutpost) SaveConfig();
-            }
-
-            if (outpost.Location == Vector3.zero)
-            {
-                outpostEnabled = false;
-            }
-            else if (!outpost.Locations.Contains(outpost.Location))
-            {
-                outpost.Locations.Add(outpost.Location);
-            }
-
-            yield return null;
+            return SetupLocation("bandit", "BanditTown", config.Settings.AutoGenBandit, () => banditEnabled = false, vector, radius, 
+                entity => entity.transform.position + entity.transform.forward + new Vector3(0f, 2f, 0f),
+                entity => entity.transform.position + new Vector3(0f, 1.1f, 0f) + entity.transform.forward
+            );
         }
 
-        private IEnumerator SetupBandit(PrefabInfo mi)
+        private IEnumerator SetupOutpost(Vector3 vector, float radius)
         {
-            var bandit = GetSettings("bandit");
-
-            if (bandit == null)
-            {
-                banditEnabled = false;
-                yield break;
-            }
-
-            float radius = mi.extents.Max();
-            if (config.Settings.Dimensions.TryGetValue("Bandit Camp", out var mmd) && mmd.enabled && mmd.radius != 0)
-            {
-                radius = mmd.radius;
-            }
-
-            if (config.Settings.AutoGenBandit && bandit.Location != Vector3.zero && bandit.Locations.Exists(a => OutOfRange(mi.position, a, radius, config.Settings.AutoGenBandit)))
-            {
-#if DEBUG
-                Puts("Invalid Bandit location detected");
-#endif
-                bandit.Location = Vector3.zero;
-                bandit.Locations = new List<Vector3>();
-            }
-            if (config.Settings.AutoGenBandit && bandit.Location == Vector3.zero)
-            {
-#if DEBUG
-                Puts("  Looking for BanditTown target");
-#endif
-                bool changedBandit = false;
-                using var ents = Pool.Get<PooledList<BaseEntity>>();
-                Vis.Entities(mi.position, radius, ents);
-                RemoveNearBuildingBlocks(ents);
-                foreach (BaseEntity entity in ents)
-                {
-                    if (entity.IsKilled() || entity.OwnerID.IsSteamId() || OutOfRange(mi.position, entity.transform.position, radius, entity is BaseChair))
-                    {
-                        continue;
-                    }
-                    if (entity.ShortPrefabName == "piano.deployed.static" || entity.ShortPrefabName == "recycler_static" || entity is NPCMissionProvider || entity is Workbench)
-                    {
-                        var position = entity.transform.position + entity.transform.forward + new Vector3(0f, 1f, 0f);
-                        if (position.y < TerrainMeta.HeightMap.GetHeight(position))
-                        {
-                            continue;
-                        }
-                        bandit.Location = position;
-                        if (!bandit.Locations.Contains(position)) bandit.Locations.Add(position);
-                        changedBandit = true;
-
-#if DEBUG
-                        Puts("  Adding BanditTown target {0}", position);
-#endif
-                    }
-                    else if (entity is BaseChair)
-                    {
-                        var position = (entity.transform.position + new Vector3(0f, 0.1f)) + entity.transform.forward + new Vector3(0f, 1f, 0f);
-                        if (position.y < TerrainMeta.HeightMap.GetHeight(position))
-                        {
-                            continue;
-                        }
-                        bandit.Location = position;
-                        if (!bandit.Locations.Contains(position)) bandit.Locations.Add(position);
-                        changedBandit = true;
-#if DEBUG
-                        Puts("  Adding BanditTown target {0}", position);
-#endif
-                    }
-                }
-                if (changedBandit) SaveConfig();
-            }
-
-            if (bandit.Location == Vector3.zero)
-            {
-                banditEnabled = false;
-            }
-            else if (!bandit.Locations.Contains(bandit.Location))
-            {
-                bandit.Locations.Add(bandit.Location);
-            }
-
-            yield return null;
+            return SetupLocation("outpost", "Outpost", config.Settings.AutoGenOutpost, () => outpostEnabled = false, vector, radius, 
+                entity => entity.transform.position + entity.transform.forward + new Vector3(0f, 2f, 0f),
+                entity => entity.transform.position + new Vector3(0f, 1.1f, 0f) + entity.transform.right
+            );
         }
 
-        private IEnumerator SetupBandit(MonumentInfo monument)
+        private IEnumerator SetupDeepSea(Vector3 vector, float radius)
         {
-            var bandit = GetSettings("bandit");
-
-            if (bandit == null)
-            {
-                banditEnabled = false;
-                yield break;
-            }
-
-            float radius = monument.Bounds.size.Max();
-
-            if (config.Settings.AutoGenBandit && bandit.Location != Vector3.zero && bandit.Locations.Exists(a => OutOfRange(monument, a, config.Settings.AutoGenBandit)))
-            {
-#if DEBUG
-                Puts("Invalid Bandit location detected");
-#endif
-                bandit.Location = Vector3.zero;
-                bandit.Locations = new List<Vector3>();
-            }
-            if (config.Settings.AutoGenBandit && bandit.Location == Vector3.zero)
-            {
-#if DEBUG
-                Puts("  Looking for BanditTown target");
-#endif
-                bool changedBandit = false;
-                using var ents = Pool.Get<PooledList<BaseEntity>>();
-                Vis.Entities(monument.transform.position, radius, ents);
-                RemoveNearBuildingBlocks(ents);
-                foreach (BaseEntity entity in ents)
-                {
-                    if (entity.IsKilled() || entity.OwnerID.IsSteamId() || OutOfRange(monument, entity.transform.position, entity is BaseChair))
-                    {
-                        continue;
-                    }
-                    if (entity.ShortPrefabName == "piano.deployed.static" || entity.ShortPrefabName == "recycler_static" || entity is NPCMissionProvider || entity is Workbench)
-                    {
-                        var position = entity.transform.position + entity.transform.forward + new Vector3(0f, 1f, 0f);
-                        if (position.y < TerrainMeta.HeightMap.GetHeight(position))
-                        {
-                            continue;
-                        }
-                        bandit.Location = position;
-                        if (!bandit.Locations.Contains(position)) bandit.Locations.Add(position);
-                        changedBandit = true;
-
-#if DEBUG
-                        Puts("  Adding BanditTown target {0}", position);
-#endif
-                    }
-                    else if (entity is BaseChair)
-                    {
-                        var position = (entity.transform.position + new Vector3(0f, 0.1f)) + entity.transform.forward + new Vector3(0f, 1f, 0f);
-                        if (position.y < TerrainMeta.HeightMap.GetHeight(position))
-                        {
-                            continue;
-                        }
-                        bandit.Location = position;
-                        if (!bandit.Locations.Contains(position)) bandit.Locations.Add(position);
-                        changedBandit = true;
-#if DEBUG
-                        Puts("  Adding BanditTown target {0}", position);
-#endif
-                    }
-                }
-                if (changedBandit) SaveConfig();
-            }
-
-            if (bandit.Location == Vector3.zero)
-            {
-                banditEnabled = false;
-            }
-            else if (!bandit.Locations.Contains(bandit.Location))
-            {
-                bandit.Locations.Add(bandit.Location);
-            }
-
-            yield return null;
+            return SetupLocation("deepsea", "DeepSea", config.Settings.AutoGenDeepSea, () => deepseaEnabled = false, vector, radius,
+                entity => entity.transform.position + entity.transform.forward + new Vector3(0f, 2f, 0f),
+                entity => entity.transform.position + new Vector3(0f, 1.1f, 0f) + (entity.transform.forward * 0.5f)
+            );
         }
 
         private Collider GetColliderFrom(Collider expect, Vector3 a, string text)
@@ -4113,9 +4092,9 @@ namespace Oxide.Plugins
         {
             bool sphere = false;
             float x = 0f, y = 0f, z = 0f, radius = 0f;
-            if (config.Settings.Dimensions.TryGetValue(text, out var mmd) && mmd.Get(out x, out y, out z, out radius))
+            if (config.Settings.Dimensions.TryGetValue(text, out var mmd) && mmd.GetRadiusOrSize(out x, out y, out z, out radius))
             {
-                sphere = radius > 1f && x <= 1f && z <= 1f;
+                sphere = radius > 0f;
                 if (sphere) x = y = z = radius;
                 goto final;
             }
@@ -4130,7 +4109,7 @@ namespace Oxide.Plugins
             }) { yield break; }
             if (config.Settings.MonumentsToExclude.Exists(v => text.Contains(v, CompareOptions.OrdinalIgnoreCase)))
             {
-#if DEBUG
+#if TPDEBUG
                 Puts("Skipped {0} {1} {2}", text, from, rot);
 #endif
                 yield break;
@@ -4222,16 +4201,16 @@ namespace Oxide.Plugins
         final:
             var mi = new PrefabInfo(from, rot, new Vector3(x, y, z), config.Admin.ExtraMonumentDistance, text, prefab, sphere);
             monuments.Add(mi);
-#if DEBUG
+#if TPDEBUG
             Puts($"Adding Monument: {text}, pos: {from}, size: {x} {y} {z}, radius: {radius}, bounds: {b.extents.Max()}, {sphere}");
 #endif
             if (config.Settings.Outpost.Exists(text.Contains))
             {
-                yield return SetupOutpost(mi);
+                yield return SetupOutpost(mi.position, mi.extents.Max());
             }
             else if (config.Settings.Bandit.Exists(text.Contains))
             {
-                yield return SetupBandit(mi);
+                yield return SetupBandit(mi.position, mi.extents.Max());
             }
         }
 
@@ -4274,7 +4253,7 @@ namespace Oxide.Plugins
             z -= Mathf.Max(5f, z * 0.05f);
         }
 
-        private static void DrawText(BasePlayer player, float duration, Color color, Vector3 from, object text) => player?.SendConsoleCommand("ddraw.text", duration, color, from, $"<size=24>{text}</size>");
+        private static void DrawText(BasePlayer player, float duration, Color color, Vector3 from, object text) => player?.SendConsoleCommand("ddraw.text", duration, color, from, $"<size=34>{text}</size>");
         private static void DrawLine(BasePlayer player, float duration, Color color, Vector3 from, Vector3 to) => player?.SendConsoleCommand("ddraw.line", duration, color, from, to);
         private static void DrawSphere(BasePlayer player, float duration, Color color, Vector3 from, float radius) => player?.SendConsoleCommand("ddraw.sphere", duration, color, from, radius);
 
@@ -4329,9 +4308,23 @@ namespace Oxide.Plugins
             CommandTeleportCancel(player.IPlayer, "tpc", new string[0]);
         }
 
-        private bool OutOfRange(MonumentInfo m, Vector3 a, bool checkHeight) => checkHeight && Mathf.Abs(a.y - TerrainMeta.HeightMap.GetHeight(a)) > 5f || m.Distance(a) > m.Bounds.extents.Max() * 0.5f;
-        
-        private bool OutOfRange(Vector3 m, Vector3 a, float r, bool checkHeight) => checkHeight && Mathf.Abs(a.y - TerrainMeta.HeightMap.GetHeight(a)) > 5f || (a - m).magnitude > r * 0.5f;
+        private bool OutOfRange(Vector3 origin, Vector3 point, float radius, bool checkHeight)
+        {
+            if (checkHeight)
+            {
+                float terrainHeight = TerrainMeta.HeightMap.GetHeight(point);
+                float waterHeight = Mathf.Max(WaterSystem.OceanLevel, TerrainMeta.WaterMap.GetHeight(point));
+                float surfaceHeight = terrainHeight > waterHeight ? terrainHeight : waterHeight;
+                float delta = point.y - surfaceHeight;
+
+                if (delta < -15f || delta > 15f)
+                {
+                    return true;
+                }
+            }
+
+            return (point - origin).sqrMagnitude > radius * radius;
+        }
 
         private void CommandToggle(IPlayer user, string command, string[] args)
         {
@@ -4372,7 +4365,7 @@ namespace Oxide.Plugins
                     if (target == null) return;
                     if (target == player)
                     {
-#if DEBUG
+#if TPDEBUG
                         Puts("Debug mode - allowing self teleport.");
 #else
                         PrintMsgL(player, "CantTeleportToSelf");
@@ -4514,7 +4507,7 @@ namespace Oxide.Plugins
                     if (target == null) return;
                     if (target == player)
                     {
-#if DEBUG
+#if TPDEBUG
                         Puts("Debug mode - allowing self teleport.");
 #else
                         PrintMsgL(player, "CantTeleportToSelf");
@@ -4683,6 +4676,12 @@ namespace Oxide.Plugins
                     PrintMsgL(player, err);
                     return;
                 }
+                err = NearMonumentTPB(adminData.PreviousLocation);
+                if (err != null)
+                {
+                    PrintMsg(player, _("TooCloseToMonTpb", player, _(err, player)));
+                    return;
+                }
             }
             var countdown = GetLower(player, config.Settings.TPB.Countdowns, config.Settings.TPB.Countdown);
             if (countdown > 0f)
@@ -4716,7 +4715,7 @@ namespace Oxide.Plugins
                     RemoveTeleportTimer(teleportTimer);
                     return;
                 }
-#if DEBUG
+#if TPDEBUG
                 Puts("Calling CheckPlayer from cmdChatHomeTP");
 #endif
                 if (!CanBypassRestrictions(player.UserIDString))
@@ -4785,6 +4784,7 @@ namespace Oxide.Plugins
             TeleportTimers.Add(teleportTimer);
         }
 
+        private HashSet<ulong> _setHomeCooldowns = new();
         private void CommandSetHome(IPlayer user, string command, string[] args)
         {
             command = command.ToLower();
@@ -4797,6 +4797,9 @@ namespace Oxide.Plugins
                 PrintMsgL(player, "SyntaxCommandSetHome");
                 return;
             }
+            ulong userid = player.userID;
+            if (!_setHomeCooldowns.Add(userid)) return; // prevent macro spamming 
+            ServerMgr.Instance.Invoke(() => _setHomeCooldowns.Remove(userid), 0.5f);
             string err = null;
             if (!_Home.TryGetValue(player.userID, out var homeData))
                 _Home[player.userID] = homeData = new HomeData();
@@ -4826,7 +4829,7 @@ namespace Oxide.Plugins
                     PrintMsgL(player, err);
                     return;
                 }
-                if (!player.CanBuild())
+                if (!CanBuild(player))
                 {
                     PrintMsgL(player, "HomeTPBuildingBlocked");
                     return;
@@ -4860,27 +4863,63 @@ namespace Oxide.Plugins
                     return;
                 }
             }
-            if (player.IsAdmin && config.Settings.DrawHomeSphere) DrawSphere(player, 30f, Color.blue, position, 2.5f);
-            var entity = player.GetParentEntity() as Tugboat;
-            if (entity != null)
+            BaseEntity parent = player.GetParentEntity();
+            if (!IsPlayerBoatWithSteeringWheel(player, parent, out BaseEntity entity))
             {
-                if (!config.Home.AllowTugboats && !permission.UserHasPermission(player.UserIDString, "nteleportation.tugboatssethomebypass") && !CanBypassRestrictions(player.UserIDString))
+                PrintMsgL(player, "HomeSteeringWheelRequired");
+                return;
+            }
+            if (entity == null)
+            {
+                entity = parent;
+            }
+            if (entity is Tugboat or SteeringWheel)
+            {
+                if (!config.Home.AllowTugboats && entity is Tugboat && !permission.UserHasPermission(player.UserIDString, "nteleportation.tugboatssethomebypass") && !CanBypassRestrictions(player.UserIDString))
                 {
                     PrintMsgL(player, "HomeTugboatNotAllowed");
                     return;
                 }
+                if (!config.Home.AllowPlayerBoats && entity is SteeringWheel && !permission.UserHasPermission(player.UserIDString, "nteleportation.playerboatssethomebypass") && !CanBypassRestrictions(player.UserIDString))
+                {
+                    PrintMsgL(player, "HomePlayerBoatNotAllowed");
+                    return;
+                }
                 homeData.Set(args[0], new HomeData.Entry
                 {
-                    Position = position - entity.transform.position,
+                    Position = entity.transform.InverseTransformPoint(position),
                     wasEntity = true,
-                    Entity = entity
+                    Entity = entity,
+                    BoatType = entity is Tugboat ? HomeData.BoatType.Tugboat : HomeData.BoatType.PlayerBoat
                 });
             }
-            else homeData.Set(args[0], new HomeData.Entry(position));
+            else
+            {
+                homeData.Set(args[0], new HomeData.Entry(position));
+            }
             changedHome = true;
             PrintMsgL(player, "HomeSave");
             PrintMsgL(player, "HomeQuota", homeData.Locations.Count, limit);
             Interface.CallHook("OnHomeAdded", player, position, args[0]);
+            if (player.IsAdmin && config.Settings.DrawHomeSphere) DrawSphere(player, 30f, Color.blue, position, 2.5f);
+        }
+
+        private bool IsPlayerBoatWithSteeringWheel(BasePlayer player, BaseEntity entity, out BaseEntity sw)
+        {
+            PlayerBoat boat = entity as PlayerBoat;
+            if (boat != null)
+            {
+                sw = boat.GetSteeringWheel();
+                return sw != null;
+            }
+            BoatBuildingStation bbs = BoatBuildingStation.GetForPlayer(player);
+            if (bbs != null)
+            {
+                sw = bbs.GetSteeringWheel();
+                return sw != null;
+            }
+            sw = null;
+            return true; // not a player boat.
         }
 
         private void CommandRemoveHome(IPlayer user, string command, string[] args)
@@ -5036,7 +5075,7 @@ namespace Oxide.Plugins
                 }
             }
             if (!found)
-                PrintMsgL(player, "HomeNoFound");
+                PrintMsg(player, $"No homes within {radius}m");
         }
 
         private void SendHomeError(BasePlayer player, List<string> toRemove, string err, string homeName, Vector3 position, bool wasEntity, bool send = true)
@@ -5377,7 +5416,7 @@ namespace Oxide.Plugins
                     RemoveTeleportTimer(teleportTimer);
                     return;
                 }
-#if DEBUG
+#if TPDEBUG
                 Puts("Calling CheckPlayer from cmdChatHomeTP");
 #endif
                 position = homeEntry.Get();
@@ -5472,7 +5511,7 @@ namespace Oxide.Plugins
                         }
                     }
                 }
-                Teleport(player, position, args[0], 0uL, town: false, allowTPB: config.Home.AllowTPB, removeHostility: config.Home.RemoveHostility, deepsea:config.Home.DeepSea, build: config.Home.UsableOutOfBuildingBlocked, craft: CanCraftHome(player), cave: CanCaveHome(player));
+                Teleport(player, position, args[0], 0uL, town: false, allowTPB: config.Home.AllowTPB, removeHostility: config.Home.RemoveHostility, deepsea: config.Home.DeepSea, build: config.Home.UsableOutOfBuildingBlocked, craft: CanCraftHome(player), cave: CanCaveHome(player));
                 homeData.Teleports.Amount++;
                 homeData.Teleports.Timestamp = timestamp;
                 changedHome = true;
@@ -5722,14 +5761,14 @@ namespace Oxide.Plugins
 
             if (target == player)
             {
-#if DEBUG
+#if TPDEBUG
                 Puts("Debug mode - allowing self teleport.");
 #else
                 PrintMsgL(player, "CantTeleportToSelf");
                 return;
 #endif
             }
-#if DEBUG
+#if TPDEBUG
             Puts("Calling CheckPlayer from cmdChatTeleportRequest");
 #endif
             if (!TeleportInForcedBoundary(player, target))
@@ -5770,10 +5809,11 @@ namespace Oxide.Plugins
                     PrintMsgL(player, err);
                     return;
                 }
-                var err2 = CheckPlayer(target, Vector3.zero, config.TPR.UsableIntoBuildingBlocked, CanCraftTPR(target), true, config.TPR.RemoveHostility, "tpr", CanCaveTPR(target), IsAlly(target.userID, player.userID, config.Home.UseTeams, config.Home.UseClans, config.Home.UseFriends), config.Home.DeepSea, "TPDeepSeaTo");
+                var isAlly = IsAlly(target.userID, player.userID, config.Home.UseTeams, config.Home.UseClans, config.Home.UseFriends);
+                var err2 = CheckPlayer(target, Vector3.zero, config.TPR.UsableIntoBuildingBlocked, CanCraftTPR(target), true, config.TPR.RemoveHostility, "tpr", CanCaveTPR(target), isAlly, config.TPR.DeepSea, "TPDeepSeaTo");
                 if (err2 != null)
                 {
-                    string error = string.Format(lang.GetMessage("ErrorTPR", this, player.UserIDString), target.displayName, lang.GetMessage(err2, this, player.UserIDString));
+                    string error = string.Format(lang.GetMessage("ErrorTPR", this, player.UserIDString), target.displayName, lang.GetMessage(isAlly ? err2 : "ErrorRedacted", this, player.UserIDString));
                     PrintMsg(player, error);
                     return;
                 }
@@ -5960,13 +6000,23 @@ namespace Oxide.Plugins
                 DestroyTeleportRequestCUI(player);
                 return;
             }
-#if DEBUG
+#if TPDEBUG
             Puts("Calling CheckPlayer from cmdChatTeleportAccept");
 #endif
             string err = null;
             var originPlayer = PlayersRequests[player.userID];
             if (originPlayer == null)
             {
+                foreach (var req in PlayersRequests)
+                {
+                    if (req.Value == player)
+                    {
+                        PlayersRequests.Remove(req.Key);
+                        break;
+                    }
+                }
+                PlayersRequests.Remove(player.userID);
+                RemovePendingRequest(player.userID);
                 PrintMsgL(player, "NoPendingRequest");
                 return;
             }
@@ -5980,24 +6030,34 @@ namespace Oxide.Plugins
                 if (err != null)
                 {
                     PrintMsgL(player, err);
+                    PlayersRequests.Remove(player.userID);
+                    PlayersRequests.Remove(originPlayer.userID);
+                    RemovePendingRequest(player.userID);
+                    PrintMsgL(originPlayer, "Interrupted");
                     return;
                 }
                 err = CheckPlayer(originPlayer, player.transform.position, config.TPR.UsableOutOfBuildingBlocked, CanCraftTPR(originPlayer), true, config.TPR.RemoveHostility, "tpa", CanCaveTPR(originPlayer), true, config.TPR.DeepSea, "TPDeepSeaFrom");
                 if (err != null)
                 {
                     PrintMsgL(originPlayer, err);
+                    //PrintMsgL(player, "Interrupted");
+                    PlayersRequests.Remove(player.userID);
+                    PlayersRequests.Remove(originPlayer.userID);
+                    RemovePendingRequest(player.userID);
                     return;
                 }
                 err = CheckTargetLocation(originPlayer, player.transform.position, config.TPR.UsableIntoBuildingBlocked, config.TPR.CupOwnerAllowOnBuildingBlocked, config.TPR.BlockForNoCupboard);
                 if (err != null)
                 {
                     PrintMsgL(player, err);
+                    //PrintMsgL(originPlayer, "Interrupted");
                     return;
                 }
                 err = CanPlayerTeleport(player, originPlayer.transform.position, player.transform.position);
                 if (err != null)
                 {
                     SendReply(player, err);
+                    //PrintMsgL(originPlayer, "Interrupted");
                     return;
                 }
                 if (config.TPR.BlockTPAOnCeiling)
@@ -6058,7 +6118,7 @@ namespace Oxide.Plugins
                     RemoveTeleportTimer(teleportTimer);
                     return;
                 }
-#if DEBUG
+#if TPDEBUG
                 Puts("Calling CheckPlayer from cmdChatTeleportAccept timer loop");
 #endif
                 if (!CanBypassRestrictions(player.UserIDString))
@@ -6196,7 +6256,7 @@ namespace Oxide.Plugins
             }
         }
 
-        private List<string> _tpid = new List<string> { "home", "bandit", "outpost", "tpr", "town" };
+        private List<string> _tpid = new List<string> { "deepsea", "home", "bandit", "outpost", "tpr", "town" };
 
         private void CommandTeleportInfo(IPlayer user, string command, string[] args)
         {
@@ -6310,6 +6370,7 @@ namespace Oxide.Plugins
                     {
                         if (command == "bandit" && !banditEnabled) continue;
                         if (command == "outpost" && !outpostEnabled) continue;
+                        if (command == "deepsea" && !deepseaEnabled) continue;
                         if (!IsAllowed(player, $"{Name}.tp{entry.Key}")) continue;
                         msg += NewLine + $"/tpinfo {entry.Key}";
                     }
@@ -6516,6 +6577,10 @@ namespace Oxide.Plugins
             {
                 outpostEnabled = settings.Locations.Count > 0;
             }
+            if (command == "deepsea")
+            {
+                deepseaEnabled = settings.Locations.Count > 0;
+            }
             SaveConfig();
             return true;
         }
@@ -6526,7 +6591,7 @@ namespace Oxide.Plugins
             if (DisabledCommandData.DisabledCommands.Contains(command)) { user.Reply("Disabled command: " + command); return; }
             if (IsServerCommand(user, command, args)) return;
             var player = user.Object as BasePlayer;
-#if DEBUG
+#if TPDEBUG
             Puts($"cmdChatTown: command={command}");
 #endif
             if (!IsAllowedMsg(player, $"{Name}.tp{command}".ToLower()) || !TeleportInForcedBoundary(player)) return;
@@ -6660,7 +6725,7 @@ namespace Oxide.Plugins
                     teleportData.Date = currentDate;
                 }
                 limit = GetHigher(player, settings.VIPDailyLimits, settings.DailyLimit, true);
-#if DEBUG
+#if TPDEBUG
                 Puts("Calling CheckPlayer from cmdChatTown");
 #endif
 
@@ -6778,6 +6843,13 @@ namespace Oxide.Plugins
                     return;
                 }
             }
+
+            if (IsInDeepSea(location) && !IsDeepSeaOpen())
+            {
+                PrintMsgL(player, "DM_TownTPNotOpened", language.SentenceCase());
+                return;
+            }
+
             int countdown = GetLower(player, settings.VIPCountdowns, settings.Countdown);
             TeleportTimer teleportTimer = Pool.Get<TeleportTimer>();
             teleportTimer.DeepSea = settings.DeepSea;
@@ -6793,7 +6865,7 @@ namespace Oxide.Plugins
                     RemoveTeleportTimer(teleportTimer);
                     return;
                 }
-#if DEBUG
+#if TPDEBUG
                 Puts($"Calling CheckPlayer from cmdChatTown {command} timer loop");
 #endif
                 if (!CanBypassRestrictions(player.UserIDString))
@@ -7230,15 +7302,16 @@ namespace Oxide.Plugins
                 RemoveHostility(player);
             }
 
+            Vector3 oldPosition = player.transform.position;
+
             if (allowTPB)
             {
                 if (config.Settings.TPB.Time > 0)
                 {
                     RemoveLocation(player);
-                    Vector3 position = player.transform.position;
-                    timer.In(config.Settings.TPB.Time, () => SaveLocation(player, position, home, uid, town, removeHostility, build, craft, cave, deepsea));
+                    timer.In(config.Settings.TPB.Time, () => SaveLocation(player, oldPosition, home, uid, town, removeHostility, build, craft, cave, deepsea));
                 }
-                else SaveLocation(player, player.transform.position, home, uid, town, removeHostility, build, craft, cave, deepsea);
+                else SaveLocation(player, oldPosition, home, uid, town, removeHostility, build, craft, cave, deepsea);
             }
 
             if (config.Settings.PlaySoundsBeforeTeleport)
@@ -7251,8 +7324,6 @@ namespace Oxide.Plugins
             teleporting[player.userID] = newPosition;
 
             Subscribe(nameof(OnPlayerViolation));
-
-            var oldPosition = player.transform.position;
 
             // credits to @ctv and @Def for their assistance
 
@@ -7291,6 +7362,9 @@ namespace Oxide.Plugins
                     player.SendNetworkUpdateImmediate();
                 }
 
+                //player.ClearEntityQueue(null);
+                //player.SendFullSnapshot();
+
                 if (CanWake(player)) player.Invoke(() =>
                 {
                     if (player != null && player.IsConnected)
@@ -7299,6 +7373,11 @@ namespace Oxide.Plugins
                     }
                 }, 0.5f);
             }
+
+            //if (!player.limitNetworking && !player.isInvisible)
+            //{
+            //    player.ForceUpdateTriggers();
+            //}
 
             timer.Once(3f, () => RemoveProtections(player.userID));
 
@@ -7460,6 +7539,51 @@ namespace Oxide.Plugins
             return false;
         }
 
+        private string NearMonumentTPB(Vector3 target)
+        {
+            var blocked = config.Settings.TPB.BlockedMonuments;
+            if (blocked.Count == 0)
+                return null;
+
+            string bestName = null;
+            float bestDist = float.MaxValue;
+
+            for (int i = 0; i < monuments.Count; i++)
+            {
+                var mi = monuments[i];
+
+                if (!mi.IsInBounds(target) || !IsBlockedMonument(blocked, mi.name))
+                {
+                    continue;
+                }
+
+                float dist = Vector3Ex.Distance2D(target, mi.position);
+#if TPDEBUG
+                Puts($"{target} in range of {mi.name} at {dist}m ({mi.Formatted()})");
+#endif
+
+                if (dist < bestDist)
+                {
+                    bestDist = dist;
+                    bestName = mi.name;
+                }
+            }
+
+            return bestName;
+        }
+
+        private static bool IsBlockedMonument(List<string> blocked, string monumentName)
+        {
+            for (int i = 0; i < blocked.Count; i++)
+            {
+                if (monumentName.Equals(blocked[i], StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         private string NearMonument(Vector3 target, bool check, string mode)
         {
             Dictionary<string, float> data = new();
@@ -7470,10 +7594,11 @@ namespace Oxide.Plugins
                 if (!check && config.Settings.Interrupt.BypassMonumentMarker && mi.prefab.Contains("monument_marker")) continue;
 
                 float dist = Vector3Ex.Distance2D(target, mi.position);
-#if DEBUG
-                Puts($"Checking {mi.name} dist: {dist}, realdistance: {mi.extents.Max()}, size: {mi.extents.Max() * 2f}, isinbounds: {mi.IsInBounds(target)}");
+                bool isInBounds = mi.IsInBounds(target);
+#if TPDEBUG
+                Puts($"Checking {mi.name} dist: {dist}, realdistance: {mi.extents.Max()}, size: {mi.extents.Max() * 2f}, isinbounds: {isInBounds}");
 #endif
-                if (mi.IsInBounds(target))
+                if (isInBounds)
                 {
                     if (config.Home.AllowedMonuments.Exists(m => mi.name.Equals(m, StringComparison.OrdinalIgnoreCase)))
                     {
@@ -7484,8 +7609,8 @@ namespace Oxide.Plugins
                     {
                         if (config.Settings.Interrupt.Monuments.Exists(value => mi.name.Contains(value, CompareOptions.OrdinalIgnoreCase)))
                         {
-#if DEBUG
-                            Puts($"{target} in range of {mi.name} at {dist}m {mi.extents} {mi.sphere}");
+#if TPDEBUG
+                            Puts($"{target} in range of {mi.name} at {dist}m ({mi.Formatted()})");
 #endif
                             data[mi.name] = dist;
                         }
@@ -7494,13 +7619,13 @@ namespace Oxide.Plugins
                         {
                             continue;
                         }
-#if DEBUG
+#if TPDEBUG
                         Puts($"{target} is not blocked from {mi.name}");
 #endif
                         return null;
                     }
-#if DEBUG
-                    Puts($"{target} in range of {mi.name} at {dist}m");
+#if TPDEBUG
+                    Puts($"{target} in range of {mi.name} at {dist}m ({mi.Formatted()})");
 #endif
                     data[mi.name] = dist;
                 }
@@ -7511,6 +7636,119 @@ namespace Oxide.Plugins
                 return s.Count > 1 && s[0].Distance > s[1].Distance ? s[1].Name : s[0].Name;
             }
             return null;
+        }
+
+        private void UpdateSteeringWheel(SteeringWheel sw)
+        {
+            if (sw == null || sw.net == null || sw.IsDestroyed)
+            {
+                return;
+            }
+
+            if (!_Home.TryGetValue(sw.OwnerID, out var homeData))
+            {
+                return;
+            }
+
+            PlayerBoat boat = sw.GetParentBoat();
+            if (boat != null)
+            {
+                if (boat.SteeringWheels == null)
+                {
+                    return;
+                }
+                foreach (var pair in homeData.boats)
+                {
+                    if (!pair.Value.CanAttachSteeringWheel(sw.net.ID.Value)) continue;
+                    if (!boat.SteeringWheels.Cached.Contains(sw)) continue;
+                    HomeData.Boat b = pair.Value;
+                    HomeData.Entry entry = b.Entry;
+                    entry.SetSteeringWheel(sw);
+                    b.UpdateSteeringWheel(sw);
+                    break;
+                }
+                return;
+            }
+
+            BoatBuildingStation station = BoatBuildingStation.GetStationIntersectingOBB(MakeMinRadiusOBB(sw.transform, sw.bounds, 10f), isServer: true);
+            if (station != null)
+            {
+                foreach (var pair in homeData.boats)
+                {
+                    if (!pair.Value.CanAttachSteeringWheel(station.net.ID.Value)) continue;
+                    if (!station.IsInsideBuildArea(pair.Value.Entry.Position)) continue;
+                    HomeData.Boat b = pair.Value;
+                    HomeData.Entry entry = b.Entry;
+                    entry.SetSteeringWheel(sw);
+                    b.UpdateSteeringWheel(sw);
+                    break;
+                }
+            }
+        }
+
+        private OBB MakeMinRadiusOBB(Transform t, Bounds b, float min)
+        {
+            float r = Mathf.Max(b.extents.x, b.extents.y, b.extents.z);
+            if (r < min) b.extents *= (min / r);
+            return new OBB(t.position, t.lossyScale, t.rotation, b);
+        }
+
+        private void RemoveSteeringWheel(SteeringWheel sw)
+        {
+            if (sw == null || sw.IsDestroyed) return;
+            if (!_Home.TryGetValue(sw.OwnerID, out var homeData)) return;
+            if (!homeData.TryGetValue(sw, out var homeEntry)) return;
+            homeEntry.RemoveSteeringWheel(sw);
+            homeEntry.Boat.RemoveSteeringWheel(sw);
+        }
+
+        private void OnEntitySpawned(SteeringWheel sw)
+        {
+            if (subPlayerBoats)
+            {
+                UpdateSteeringWheel(sw);
+            }
+        }
+
+        private void OnEntitySpawned(PlayerBoat boat)
+        {
+            if (subPlayerBoats && boat != null)
+            {
+                boat.Invoke(() =>
+                {
+                    if (boat.IsDestroyed) return;
+                    var sw = boat.GetSteeringWheel();
+                    if (sw != null) UpdateSteeringWheel(sw);
+                }, 0.1f);
+            }
+        }
+
+        private void OnEntityKill(SteeringWheel sw)
+        {
+            if (subPlayerBoats)
+            {
+                RemoveSteeringWheel(sw);
+            }
+        }
+
+        private bool CanBuild(BasePlayer player)
+        {
+            return GetPrivilege(player) switch
+            {
+                BoatBuildingStation bbs => bbs.CanPlayerBuild(player),
+                VehiclePrivilege vp => vp.IsAuthed(player),
+                BuildingPrivlidge bp => bp.IsAuthed(player),
+                _ => true
+            };
+        }
+
+        private BaseEntity GetPrivilege(BasePlayer player)
+        {
+            var vehiclePriv = player.GetVehicleBuildingPrivilege(true);
+            if (vehiclePriv != null)
+                return vehiclePriv;
+
+            return player.GetBuildingPrivilege(true);
         }
 
         private string CheckPlayer(BasePlayer player, Vector3 zonePos, bool build, bool craft, bool origin, bool removeHostility, string mode, bool allowcave, bool ff, bool deepsea, string deepSeaKey)
@@ -7558,7 +7796,7 @@ namespace Oxide.Plugins
                 }
             }
 
-#if DEBUG
+#if TPDEBUG
             Puts($"CheckPlayer(): called mode is {mode}");
 #endif
             switch (mode)
@@ -7574,14 +7812,14 @@ namespace Oxide.Plugins
                     allowcave = config.TPR.AllowCave;
                     break;
                 default:
-#if DEBUG
+#if TPDEBUG
                     Puts("Skipping cave check...");
 #endif
                     break;
             }
             if (!allowcave)
             {
-#if DEBUG
+#if TPDEBUG
                 Puts("Checking cave distance...");
 #endif
                 if (IsInCave(player.transform.position))
@@ -7590,7 +7828,7 @@ namespace Oxide.Plugins
                 }
             }
 
-            if (config.Settings.Interrupt.Hostile && !removeHostility && (mode == "bandit" || mode == "outpost" || config.Settings.Interrupt.IncludeHostileTown && mode == "town"))
+            if (config.Settings.Interrupt.Hostile && !removeHostility && (mode == "bandit" || mode == "outpost" || mode == "deepsea" || config.Settings.Interrupt.IncludeHostileTown && mode == "town"))
             {
                 if (player.State.unHostileTimestamp > TimeEx.currentTimestamp || player.unHostileTime > Time.realtimeSinceStartup)
                 {
@@ -7658,7 +7896,7 @@ namespace Oxide.Plugins
                 return "TPDead";
             }
 
-            if (!build && !player.CanBuild())
+            if (!build && !CanBuild(player))
             {
                 return "TPBuildingBlocked";
             }
@@ -7686,6 +7924,11 @@ namespace Oxide.Plugins
                 return "TPNoEscapeBlocked";
             }
 
+            if (!deepsea && IsInDeepSea(player.transform.position))
+            {
+                return deepSeaKey;
+            }
+
             var entity = GetStandingOnEntity<BaseMountable>(player, 1f, Layers.Mask.Vehicle_Detailed | Layers.Mask.Vehicle_Large);
 
             if (entity is BaseMountable)
@@ -7693,6 +7936,11 @@ namespace Oxide.Plugins
                 if (entity is Tugboat)
                 {
                     return !config.Home.AllowTugboats && !permission.UserHasPermission(player.UserIDString, "nteleportation.tugboatsinterruptbypass") ? "TPTugboat" : null;
+                }
+
+                if (entity is PlayerBoat)
+                {
+                    return !config.Home.AllowPlayerBoats && !permission.UserHasPermission(player.UserIDString, "nteleportation.playerboatsinterruptbypass") ? "TPPlayerBoat" : null;
                 }
 
                 if (config.Settings.Interrupt.Boats && entity is BaseBoat)
@@ -7721,11 +7969,6 @@ namespace Oxide.Plugins
                 return "TPUnderWater";
             }
 
-            if (!deepsea && IsInDeepSea(player.transform.position))
-            {
-                return deepSeaKey;
-            }
-
             return null;
         }
 
@@ -7736,6 +7979,10 @@ namespace Oxide.Plugins
                 return false;
             }
             if ((config.Home.AllowTugboats || permission.UserHasPermission(player.UserIDString, "nteleportation.tugboatsinterruptbypass")) && entity is Tugboat)
+            {
+                return false;
+            }
+            if ((config.Home.AllowPlayerBoats || permission.UserHasPermission(player.UserIDString, "nteleportation.playerboatsinterruptbypass")) && entity is PlayerBoat)
             {
                 return false;
             }
@@ -7757,7 +8004,7 @@ namespace Oxide.Plugins
             {
                 if (entity is Tugboat)
                 {
-                    if (usableIntoBuildingBlocked || player.CanBuild(entity.WorldSpaceBounds())) return null;
+                    if (usableIntoBuildingBlocked || CanBuild(player)) return null;
                     return "TPTargetBuildingBlocked";
                 }
                 if (!(entity is BuildingBlock block))
@@ -7767,26 +8014,26 @@ namespace Oxide.Plugins
                 if (CheckCupboardBlock(block, player, cupOwnerAllowOnBuildingBlocked, blockForNoCupboard, out string err))
                 {
                     denied = false;
-#if DEBUG
+#if TPDEBUG
                     Puts("Cupboard either owned or there is no cupboard");
 #endif
                 }
                 else if (usableIntoBuildingBlocked && player.userID != block.OwnerID)
                 {
                     denied = false;
-#if DEBUG
+#if TPDEBUG
                     Puts("Player does not own block, but UsableIntoBuildingBlocked=true");
 #endif
                 }
                 else if (player.userID == block.OwnerID)
                 {
-#if DEBUG
+#if TPDEBUG
                     Puts("Player owns block");
 #endif
 
                     if (!player.IsBuildingBlocked(targetLocation, Quaternion.identity, block.bounds))
                     {
-#if DEBUG
+#if TPDEBUG
                         Puts("Player not BuildingBlocked. Likely unprotected building.");
 #endif
                         denied = false;
@@ -7794,7 +8041,7 @@ namespace Oxide.Plugins
                     }
                     else if (usableIntoBuildingBlocked)
                     {
-#if DEBUG
+#if TPDEBUG
                         Puts("Player not blocked because UsableIntoBuildingBlocked=true");
 #endif
                         denied = false;
@@ -7802,7 +8049,7 @@ namespace Oxide.Plugins
                     }
                     else
                     {
-#if DEBUG
+#if TPDEBUG
                         Puts("Player owns block but blocked by UsableIntoBuildingBlocked=false");
 #endif
                         denied = true;
@@ -7811,7 +8058,7 @@ namespace Oxide.Plugins
                 }
                 else
                 {
-#if DEBUG
+#if TPDEBUG
                     Puts("Player blocked");
 #endif
                     denied = true;
@@ -7826,28 +8073,69 @@ namespace Oxide.Plugins
         {
             err = null;
             // obb == CupOwnerAllowOnBuildingBlocked
+            if (block is BoatBuildingBlock)
+            {
+                var priv = player.GetVehicleBuildingPrivilege(true);
+                var vehiclePriv = priv as VehiclePrivilege;
+                if (vehiclePriv != null && vehiclePriv.IsAuthed(player))
+                {
+#if TPDEBUG
+                    Puts($"{player} is authorized on the boat");
+#endif
+                    return true;
+                }
+
+                var bbs = priv as BoatBuildingStation;
+                if (bbs != null && bbs.CanPlayerBuild(player))
+                {
+#if TPDEBUG
+                    Puts($"{player} is authorized on the boat (building station)");
+#endif
+                    return true;
+                }
+
+                if (player.userID == block.OwnerID)
+                {
+                    if (cupOwnerAllowOnBuildingBlocked)
+                    {
+#if TPDEBUG
+                        // player set the boat and is allowed in by config
+                        Puts($"{player} owns boat with no auth, but allowed by CupOwnerAllowOnBuildingBlocked=true");
+#endif
+                        return true;
+                    }
+#if TPDEBUG
+                    // player set the boat but is blocked by config
+                    Puts($"{player} owns boat with no auth, but blocked by CupOwnerAllowOnBuildingBlocked=false");
+#endif
+                }
+
+                err = "HomeTPBuildingBlocked";
+                return false;
+            }
+
             var building = block.GetBuilding();
             if (building != null)
             {
-#if DEBUG
-                Puts("Found building, checking privileges...");
-                Puts($"Building ID: {building.ID}");
+#if TPDEBUG
+                Puts($"{player}: Found building, checking privileges...");
+                Puts($"{player}: Building ID: {building.ID}");
 #endif
                 // cupboard overlap.  Check privs.
                 if (building.buildingPrivileges == null)
                 {
                     if (blockForNoCupboard)
                     {
-#if DEBUG
-                        Puts("No cupboard found, blocking teleport");
+#if TPDEBUG
+                        Puts($"{player}: No cupboard found, blocking teleport");
 #endif
                         err = "HomeTPNoCupboard";
                         return false;
                     }
                     else
                     {
-#if DEBUG
-                        Puts("No cupboard found, allowing teleport");
+#if TPDEBUG
+                        Puts($"{player}: No cupboard found, allowing teleport");
 #endif
                         return true;
                     }
@@ -7857,8 +8145,8 @@ namespace Oxide.Plugins
                 {
                     if (priv.IsAuthed(player))
                     {
-#if DEBUG
-                        Puts("Player is authorized to the cupboard");
+#if TPDEBUG
+                        Puts($"{player} is authorized to the cupboard");
 #endif
                         return true;
                     }
@@ -7868,29 +8156,29 @@ namespace Oxide.Plugins
                 {
                     if (cupOwnerAllowOnBuildingBlocked)
                     {
-#if DEBUG
+#if TPDEBUG
                         // player set the cupboard and is allowed in by config
-                        Puts("Player owns cupboard with no auth, but allowed by CupOwnerAllowOnBuildingBlocked=true");
+                        Puts($"{player} owns cupboard with no auth, but allowed by CupOwnerAllowOnBuildingBlocked=true");
 #endif
                         return true;
                     }
-#if DEBUG
+#if TPDEBUG
                     // player set the cupboard but is blocked by config
-                    Puts("Player owns cupboard with no auth, but blocked by CupOwnerAllowOnBuildingBlocked=false");
+                    Puts($"{player} owns cupboard with no auth, but blocked by CupOwnerAllowOnBuildingBlocked=false");
 #endif
                     err = "HomeTPBuildingBlocked";
                     return false;
                 }
 
-#if DEBUG
+#if TPDEBUG
                 // player not authed
-                Puts("Player does not own cupboard and is not authorized");
+                Puts($"{player} does not own cupboard and is not authorized");
 #endif
                 err = "HomeTPBuildingBlocked"; 
                 return false;
             }
-#if DEBUG
-            Puts("No cupboard or building found - we cannot tell the status of this block");
+#if TPDEBUG
+            Puts($"{player}: No cupboard or building found - we cannot tell the status of this block");
 #endif
             return true;
         }
@@ -7997,7 +8285,7 @@ namespace Oxide.Plugins
             {
                 return "HomeFoundationUnderneathFoundation";
             }
-            if (!IsStandingOnEntity(position, 2f, Layers.Mask.Construction | Layers.Mask.Vehicle_Large, out var entity, !config.Home.AllowAboveFoundation ? new string[2] { "foundation", "tugboat" } : new string[3] { "floor", "foundation", "tugboat" }))
+            if (!IsStandingOnEntity(position, 2f, Layers.Mask.Construction | Layers.Mask.Vehicle_Large, out var entity, !config.Home.AllowAboveFoundation ? new string[3] { "foundation", "tugboat", "playerboat" } : new string[4] { "foundation", "tugboat", "playerboat", "floor" }))
             {
                 return "HomeNoFoundation";
             }
@@ -8038,13 +8326,6 @@ namespace Oxide.Plugins
             return hit.collider.name.Contains("ice_sheet") || hit.collider.name.Contains("iceberg");
         }
 
-        private BuildingBlock GetFoundationOwned(Vector3 position, ulong userID)
-        {
-            if (!IsStandingOnEntity(position, 2f, Layers.Mask.Construction, out var entity, new string[1] { "foundation" }) || !PassesStrictCheck(entity, position)) return null;
-            if (!config.Home.CheckFoundationForOwner || IsAlly(userID, entity.OwnerID, config.Home.UseTeams, config.Home.UseClans, config.Home.UseFriends)) return entity as BuildingBlock;
-            return null;
-        }
-
         private bool IsAlly(ulong playerId, ulong targetId, bool useTeams, bool useClans, bool useFriends)
         {
             if (playerId == targetId)
@@ -8070,17 +8351,17 @@ namespace Oxide.Plugins
         {
             if (config.TPR.UseBlockedUsers && BlockUsers != null && BlockUsers.IsLoaded)
             {
-#if DEBUG
+#if TPDEBUG
                 Puts("Is user blocked? {0} / {1}", playerid, targetid);
 #endif
                 if (Convert.ToBoolean(BlockUsers?.CallHook("IsBlockedUser", playerid, targetid)))
                 {
-#if DEBUG
+#if TPDEBUG
                     Puts("  BlockUsers plugin returned true");
 #endif
                     return true;
                 }
-#if DEBUG
+#if TPDEBUG
                 Puts("  BlockUsers plugin returned false");
 #endif
             }
@@ -8089,24 +8370,24 @@ namespace Oxide.Plugins
 
         private bool PassesStrictCheck(BaseEntity entity, Vector3 position)
         {
-            if (!config.Settings.StrictFoundationCheck || entity is Tugboat)
+            if (!config.Settings.StrictFoundationCheck || (entity is Tugboat or PlayerBoat or BoatBuildingBlock or BoatBuildingStation))
             {
                 return true;
             }
-#if DEBUG
+#if TPDEBUG
             Puts($"PassesStrictCheck() called for {entity.ShortPrefabName}");
 #endif
             Vector3 center = entity.CenterPoint();
 
             if (IsExternalWallOverlapped(center, position)) return false;
-#if DEBUG
+#if TPDEBUG
             Puts($"  Checking block: {entity.name} @ center {center}, pos: {position}");
 #endif
             if (entity.PrefabName.Contains("triangle.prefab"))
             {
                 if (Math.Abs(center.x - position.x) < 0.46f && Math.Abs(center.z - position.z) < 0.46f)
                 {
-#if DEBUG
+#if TPDEBUG
                     Puts($"    Found: {entity.ShortPrefabName} @ center: {center}, pos: {position}");
 #endif
                     return true;
@@ -8116,7 +8397,7 @@ namespace Oxide.Plugins
             {
                 if (Math.Abs(center.x - position.x) < 0.7f && Math.Abs(center.z - position.z) < 0.7f)
                 {
-#if DEBUG
+#if TPDEBUG
                     Puts($"    Found: {entity.ShortPrefabName} @ center: {center}, pos: {position}");
 #endif
                     return true;
@@ -8133,13 +8414,20 @@ namespace Oxide.Plugins
             {
                 if (wall.PrefabName.Contains("external.high"))
                 {
-#if DEBUG
+#if TPDEBUG
                     Puts($"    Found: {wall.PrefabName} @ center {center}, pos {position}");
 #endif
                     return true;
                 }
             }
             return false;
+        }
+
+        private BuildingBlock GetFoundationOwned(Vector3 position, ulong userID)
+        {
+            if (!IsStandingOnEntity(position, 2f, Layers.Mask.Construction, out var entity, new string[2] { "foundation", "floor" }) || !PassesStrictCheck(entity, position)) return null;
+            if (!config.Home.CheckFoundationForOwner || IsAlly(userID, entity.OwnerID, config.Home.UseTeams, config.Home.UseClans, config.Home.UseFriends)) return entity as BuildingBlock;
+            return null;
         }
 
         private T FindEntity<T>(BaseEntity entity) where T : BaseEntity
@@ -8191,12 +8479,12 @@ namespace Oxide.Plugins
 
         private T GetStandingOnEntity<T>(Vector3 a, float distance, int layerMask) where T : BaseEntity
         {
-            if (Physics.Raycast(a + new Vector3(0f, 0.1f, 0f), Vector3.down, out var hit, distance, layerMask, QueryTriggerInteraction.Ignore))
+            if (Physics.Raycast(a + new Vector3(0f, 0.2f, 0f), Vector3.down, out var hit, distance, layerMask, QueryTriggerInteraction.Ignore))
             {
                 var entity = hit.GetEntity();
                 if (entity is T n) return n;
             }
-            if (layerMask != Layers.Mask.Construction)
+            if ((layerMask & Layers.Mask.Construction) == 0)
             {
                 using var ents = FindEntitiesOfType<T>(a, distance, layerMask);
                 return ents.Count > 0 ? ents[0] : null;
@@ -8207,7 +8495,9 @@ namespace Oxide.Plugins
         private bool IsStandingOnEntity(Vector3 a, float distance, int layerMask, out BaseEntity entity, string[] prefabs)
         {
             entity = GetStandingOnEntity<BaseEntity>(a, distance, layerMask);
-            if (entity == null || !PassesStrictCheck(entity, a)) return false;
+            if (entity == null) return false;
+            if (entity is Tugboat or PlayerBoat or BoatBuildingBlock or BoatBuildingStation) return entity;
+            if (!PassesStrictCheck(entity, a)) return false;
             return Array.Exists(prefabs, entity.ShortPrefabName.Contains);
         }
 
