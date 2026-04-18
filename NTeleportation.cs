@@ -41,7 +41,7 @@ Added `Custom monument marker dimensions` where you can
 
 namespace Oxide.Plugins
 {
-    [Info("NTeleportation", "nivex", "1.9.459")]
+    [Info("NTeleportation", "nivex", "1.9.461")]
     [Description("Multiple teleportation systems for admin and players")]
     class NTeleportation : RustPlugin
     {
@@ -6012,188 +6012,188 @@ namespace Oxide.Plugins
             command = command.ToLower();
             if (DisabledCommandData.DisabledCommands.Contains(command)) { user.Reply("Disabled command: " + command); return; }
             if (!config.Settings.TPREnabled) { user.Reply("TPR is not enabled in the config."); return; }
-            var target = user.Object as BasePlayer;
-            if (!IsAllowedMsg(target, config.TPR.RequireTPAPermission ? PermTpA : PermTpR)) return;
-            DestroyTeleportRequestCUI(target);
+            var player = user.Object as BasePlayer;
+            if (!IsAllowedMsg(player, config.TPR.RequireTPAPermission ? PermTpA : PermTpR)) return;
+            DestroyTeleportRequestCUI(player);
             if (args.Length != 0)
             {
-                PrintMsgL(target, "SyntaxCommandTPA");
+                PrintMsgL(player, "SyntaxCommandTPA");
                 return;
             }
-            if (!HasPendingRequest(target.userID))
+            if (!HasPendingRequest(player.userID))
             {
-                PrintMsgL(target, "NoPendingRequest");
-                DestroyTeleportRequestCUI(target);
+                PrintMsgL(player, "NoPendingRequest");
+                DestroyTeleportRequestCUI(player);
                 return;
             }
 #if TPDEBUG
             Puts("Calling CheckPlayer from cmdChatTeleportAccept");
 #endif
             string err = null;
-            var caller = PlayersRequests[target.userID];
-            if (caller == null)
+            var originPlayer = PlayersRequests[player.userID];
+            if (originPlayer == null)
             {
                 foreach (var req in PlayersRequests)
                 {
-                    if (req.Value == target)
+                    if (req.Value == player)
                     {
                         PlayersRequests.Remove(req.Key);
                         break;
                     }
                 }
-                PlayersRequests.Remove(target.userID);
-                RemovePendingRequest(target.userID);
-                PrintMsgL(target, "NoPendingRequest");
+                PlayersRequests.Remove(player.userID);
+                RemovePendingRequest(player.userID);
+                PrintMsgL(player, "NoPendingRequest");
                 return;
             }
-            if (!CanBypassRestrictions(target.UserIDString))
+            if (!CanBypassRestrictions(player.UserIDString))
             {
-                if (!TeleportInForcedBoundary(caller, target))
+                if (!TeleportInForcedBoundary(originPlayer, player))
                 {
                     return;
                 }
-                err = CheckPlayer(target, Vector3.zero, config.TPR.UsableIntoBuildingBlocked, CanCraftTPR(target), false, config.TPR.RemoveHostility, "tpa", CanCaveTPR(target), true, config.TPR.DeepSea, "TPDeepSeaFrom");
+                err = CheckPlayer(player, Vector3.zero, config.TPR.UsableIntoBuildingBlocked, CanCraftTPR(player), false, config.TPR.RemoveHostility, "tpa", CanCaveTPR(player), true, config.TPR.DeepSea, "TPDeepSeaFrom");
                 if (err != null)
                 {
-                    PrintMsgL(target, err);
-                    PlayersRequests.Remove(target.userID);
-                    PlayersRequests.Remove(caller.userID);
-                    RemovePendingRequest(target.userID);
-                    PrintMsgL(caller, "Interrupted");
+                    PrintMsgL(player, err);
+                    PlayersRequests.Remove(player.userID);
+                    PlayersRequests.Remove(originPlayer.userID);
+                    RemovePendingRequest(player.userID);
+                    PrintMsgL(originPlayer, "Interrupted");
                     return;
                 }
-                err = CheckPlayer(caller, target.transform.position, config.TPR.UsableOutOfBuildingBlocked, CanCraftTPR(caller), true, config.TPR.RemoveHostility, "tpa", CanCaveTPR(caller), true, config.TPR.DeepSea, "TPDeepSeaFrom");
+                err = CheckPlayer(originPlayer, player.transform.position, config.TPR.UsableOutOfBuildingBlocked, CanCraftTPR(originPlayer), true, config.TPR.RemoveHostility, "tpa", CanCaveTPR(originPlayer), true, config.TPR.DeepSea, "TPDeepSeaFrom");
                 if (err != null)
                 {
-                    PrintMsgL(caller, err);
+                    PrintMsgL(originPlayer, err);
                     //PrintMsgL(player, "Interrupted");
-                    PlayersRequests.Remove(target.userID);
-                    PlayersRequests.Remove(caller.userID);
-                    RemovePendingRequest(target.userID);
+                    PlayersRequests.Remove(player.userID);
+                    PlayersRequests.Remove(originPlayer.userID);
+                    RemovePendingRequest(player.userID);
                     return;
                 }
-                bool cupAllyAllowOnBuildingBlocked = config.TPR.CupAllyAllowOnBuildingBlocked && IsAlly(target.userID, caller.userID, config.TPT.UseTeams, config.TPT.UseClans, config.TPT.UseFriends);
-                err = CheckTargetLocation(caller, target.transform.position, config.TPR.UsableIntoBuildingBlocked, config.TPR.CupOwnerAllowOnBuildingBlocked, cupAllyAllowOnBuildingBlocked, config.TPR.BlockForNoCupboard);
+                bool cupAllyAllowOnBuildingBlocked = config.TPR.CupAllyAllowOnBuildingBlocked && IsAlly(originPlayer.userID, player.userID, config.TPT.UseTeams, config.TPT.UseClans, config.TPT.UseFriends);
+                err = CheckTargetLocation(originPlayer, player.transform.position, config.TPR.UsableIntoBuildingBlocked, config.TPR.CupOwnerAllowOnBuildingBlocked, cupAllyAllowOnBuildingBlocked, config.TPR.BlockForNoCupboard);
                 if (err != null)
                 {
-                    PrintMsgL(target, err);
+                    PrintMsgL(player, err);
                     //PrintMsgL(originPlayer, "Interrupted");
                     return;
                 }
-                err = CanPlayerTeleport(target, caller.transform.position, target.transform.position);
+                err = CanPlayerTeleport(player, originPlayer.transform.position, player.transform.position);
                 if (err != null)
                 {
-                    SendReply(target, err);
+                    SendReply(player, err);
                     //PrintMsgL(originPlayer, "Interrupted");
                     return;
                 }
                 if (config.TPR.BlockTPAOnCeiling)
                 {
-                    if (IsStandingOnEntity(target.transform.position, 20f, Layers.Mask.Construction, out var entity, new string[2] { "floor", "roof" }) && IsCeiling(entity as DecayEntity))
+                    if (IsStandingOnEntity(player.transform.position, 20f, Layers.Mask.Construction, out var entity, new string[2] { "floor", "roof" }) && IsCeiling(entity as DecayEntity))
                     {
-                        PrintMsgL(target, "TPRNoCeiling");
+                        PrintMsgL(player, "TPRNoCeiling");
                         return;
                     }
-                    if (IsBlockedOnIceberg(target.transform.position))
+                    if (IsBlockedOnIceberg(player.transform.position))
                     {
-                        PrintMsgL(target, "HomeIce");
+                        PrintMsgL(player, "HomeIce");
                         return;
                     }
                 }
-                float globalCooldownTime = GetGlobalCooldown(target);
+                float globalCooldownTime = GetGlobalCooldown(player);
                 if (globalCooldownTime > 0f)
                 {
-                    PrintMsgL(target, "WaitGlobalCooldown", FormatTime(target, (int)globalCooldownTime));
+                    PrintMsgL(player, "WaitGlobalCooldown", FormatTime(player, (int)globalCooldownTime));
                     return;
                 }
-                if (config.Settings.BlockAuthorizedTeleporting && target.IsBuildingAuthed())
+                if (config.Settings.BlockAuthorizedTeleporting && player.IsBuildingAuthed())
                 {
-                    PrintMsgL(target, "CannotTeleportFromHome");
+                    PrintMsgL(player, "CannotTeleportFromHome");
                     return;
                 }
             }
-            var countdown = GetLower(caller, config.TPR.VIPCountdowns, config.TPR.Countdown);
-            PrintMsgL(caller, "Accept", target.displayName, countdown);
-            PrintMsgL(target, "AcceptTarget", caller.displayName);
-            Interface.CallHook("OnTeleportAccepted", target, caller, countdown);
+            var countdown = GetLower(originPlayer, config.TPR.VIPCountdowns, config.TPR.Countdown);
+            PrintMsgL(originPlayer, "Accept", player.displayName, countdown);
+            PrintMsgL(player, "AcceptTarget", originPlayer.displayName);
+            Interface.CallHook("OnTeleportAccepted", player, originPlayer, countdown);
             if (config.TPR.PlaySoundsWhenTargetAccepts)
             {
-                SendEffect(caller, config.TPR.TeleportAcceptEffects);
+                SendEffect(originPlayer, config.TPR.TeleportAcceptEffects);
             }
-            var playerName = target.displayName;
-            var originName = caller.displayName;
+            var playerName = player.displayName;
+            var originName = originPlayer.displayName;
             var timestamp = Facepunch.Math.Epoch.Current;
             TeleportTimer teleportTimer = Pool.Get<TeleportTimer>();
             teleportTimer.DeepSea = config.TPR.DeepSea;
             teleportTimer.RemoveHostility = config.TPR.RemoveHostility;
-            teleportTimer.UserID = caller.userID;
-            teleportTimer.OriginPlayer = caller;
-            teleportTimer.TargetPlayer = target;
+            teleportTimer.UserID = originPlayer.userID;
+            teleportTimer.OriginPlayer = originPlayer;
+            teleportTimer.TargetPlayer = player;
             teleportTimer.time = Time.time + countdown;
             teleportTimer.action = () =>
             {
-                if (target == null || target.net == null || target.IsDestroyed)
+                if (player == null || player.net == null || player.IsDestroyed)
                 {
-                    PrintMsgL(caller, "InterruptedTarget", playerName);
+                    PrintMsgL(originPlayer, "InterruptedTarget", playerName);
                     RemoveTeleportTimer(teleportTimer);
                     return;
                 }
 
-                if (caller == null || caller.IsDestroyed)
+                if (originPlayer == null || originPlayer.IsDestroyed)
                 {
-                    PrintMsgL(target, "InterruptedTarget", originName);
+                    PrintMsgL(player, "InterruptedTarget", originName);
                     RemoveTeleportTimer(teleportTimer);
                     return;
                 }
 #if TPDEBUG
                 Puts("Calling CheckPlayer from cmdChatTeleportAccept timer loop");
 #endif
-                if (!CanBypassRestrictions(target.UserIDString))
+                if (!CanBypassRestrictions(player.UserIDString))
                 {
-                    if (!TeleportInForcedBoundary(caller, target))
+                    if (!TeleportInForcedBoundary(originPlayer, player))
                     {
                         return;
                     }
-                    if (config.Settings.BlockAuthorizedTeleporting && target.IsBuildingAuthed())
+                    if (config.Settings.BlockAuthorizedTeleporting && player.IsBuildingAuthed())
                     {
-                        PrintMsgL(target, "CannotTeleportFromHome");
+                        PrintMsgL(player, "CannotTeleportFromHome");
                         return;
                     }
-                    err = CheckPlayer(caller, target.transform.position, config.TPR.UsableOutOfBuildingBlocked, CanCraftTPR(caller), true, config.TPR.RemoveHostility, "tpa", CanCaveTPR(caller), true, config.TPR.DeepSea, "TPDeepSeaTo") ?? 
-                          CheckPlayer(target, Vector3.zero, false, CanCraftTPR(target), true, config.TPR.RemoveHostility, "tpa", CanCaveTPR(target), IsAlly(caller.userID, target.userID, config.Home.UseTeams, config.Home.UseClans, config.Home.UseFriends), config.TPR.DeepSea, "TPDeepSeaFrom");
+                    err = CheckPlayer(originPlayer, player.transform.position, config.TPR.UsableOutOfBuildingBlocked, CanCraftTPR(originPlayer), true, config.TPR.RemoveHostility, "tpa", CanCaveTPR(originPlayer), true, config.TPR.DeepSea, "TPDeepSeaTo") ?? 
+                          CheckPlayer(player, Vector3.zero, false, CanCraftTPR(player), true, config.TPR.RemoveHostility, "tpa", CanCaveTPR(player), IsAlly(originPlayer.userID, player.userID, config.Home.UseTeams, config.Home.UseClans, config.Home.UseFriends), config.TPR.DeepSea, "TPDeepSeaFrom");
                     if (err != null)
                     {
-                        PrintMsgL(target, "InterruptedTarget", caller.displayName);
-                        PrintMsgL(caller, "Interrupted");
-                        PrintMsgL(caller, err);
+                        PrintMsgL(player, "InterruptedTarget", originPlayer.displayName);
+                        PrintMsgL(originPlayer, "Interrupted");
+                        PrintMsgL(originPlayer, err);
                         RemoveTeleportTimer(teleportTimer);
                         return;
                     }
-                    bool cupAllyAllowOnBuildingBlocked = config.TPR.CupAllyAllowOnBuildingBlocked && IsAlly(caller.userID, target.userID, config.TPT.UseTeams, config.TPT.UseClans, config.TPT.UseFriends);
-                    err = CheckTargetLocation(caller, target.transform.position, config.TPR.UsableIntoBuildingBlocked, config.TPR.CupOwnerAllowOnBuildingBlocked, cupAllyAllowOnBuildingBlocked, config.TPR.BlockForNoCupboard);
+                    bool cupAllyAllowOnBuildingBlocked = config.TPR.CupAllyAllowOnBuildingBlocked && IsAlly(originPlayer.userID, player.userID, config.TPT.UseTeams, config.TPT.UseClans, config.TPT.UseFriends);
+                    err = CheckTargetLocation(originPlayer, player.transform.position, config.TPR.UsableIntoBuildingBlocked, config.TPR.CupOwnerAllowOnBuildingBlocked, cupAllyAllowOnBuildingBlocked, config.TPR.BlockForNoCupboard);
                     if (err != null)
                     {
-                        PrintMsgL(target, err);
-                        PrintMsgL(caller, "Interrupted");
-                        PrintMsgL(caller, err);
+                        PrintMsgL(player, err);
+                        PrintMsgL(originPlayer, "Interrupted");
+                        PrintMsgL(originPlayer, err);
                         RemoveTeleportTimer(teleportTimer);
                         return;
                     }
-                    err = CanPlayerTeleport(caller, target.transform.position, caller.transform.position);
+                    err = CanPlayerTeleport(originPlayer, player.transform.position, originPlayer.transform.position);
                     if (err != null)
                     {
-                        SendReply(target, err);
-                        PrintMsgL(caller, "Interrupted");
-                        SendReply(caller, err);
+                        SendReply(player, err);
+                        PrintMsgL(originPlayer, "Interrupted");
+                        SendReply(originPlayer, err);
                         RemoveTeleportTimer(teleportTimer);
                         return;
                     }
-                    err = CheckItems(caller);
+                    err = CheckItems(originPlayer);
                     if (err != null)
                     {
-                        PrintMsgL(target, "InterruptedTarget", caller.displayName);
-                        PrintMsgL(caller, "Interrupted");
-                        PrintMsgL(caller, "TPBlockedItem", err);
+                        PrintMsgL(player, "InterruptedTarget", originPlayer.displayName);
+                        PrintMsgL(originPlayer, "Interrupted");
+                        PrintMsgL(originPlayer, "TPBlockedItem", err);
                         RemoveTeleportTimer(teleportTimer);
                         return;
                     }
@@ -6201,46 +6201,46 @@ namespace Oxide.Plugins
                     {
                         if (config.TPR.Pay > -1)
                         {
-                            if (!CheckEconomy(caller, config.TPR.Pay))
+                            if (!CheckEconomy(originPlayer, config.TPR.Pay))
                             {
                                 if (config.TPR.Pay > 0)
                                 {
-                                    PrintMsgL(caller, "TPNoMoney", config.TPR.Pay);
+                                    PrintMsgL(originPlayer, "TPNoMoney", config.TPR.Pay);
                                 }
 
-                                PrintMsgL(target, "InterruptedTarget", caller.displayName);
+                                PrintMsgL(player, "InterruptedTarget", originPlayer.displayName);
                                 RemoveTeleportTimer(teleportTimer);
                                 return;
                             }
                             else
                             {
-                                CheckEconomy(caller, config.TPR.Pay, true);
+                                CheckEconomy(originPlayer, config.TPR.Pay, true);
 
                                 if (config.TPR.Pay > 0)
                                 {
-                                    PrintMsgL(caller, "TPMoney", (double)config.TPR.Pay);
+                                    PrintMsgL(originPlayer, "TPMoney", (double)config.TPR.Pay);
                                 }
                             }
                         }
                     }
                 }
-                SendDiscordMessage(caller, target);
-                Teleport(caller, target.transform.position, "", target.userID, town: false, allowTPB: config.TPR.AllowTPB, removeHostility: config.TPR.RemoveHostility, deepsea: config.TPR.DeepSea, build: config.TPR.UsableOutOfBuildingBlocked, craft: CanCraftTPR(target), CanCaveTPR(target));
-                var tprData = _TPR[caller.userID];
+                SendDiscordMessage(originPlayer, player);
+                Teleport(originPlayer, player.transform.position, "", player.userID, town: false, allowTPB: config.TPR.AllowTPB, removeHostility: config.TPR.RemoveHostility, deepsea: config.TPR.DeepSea, build: config.TPR.UsableOutOfBuildingBlocked, craft: CanCraftTPR(player), CanCaveTPR(player));
+                var tprData = _TPR[originPlayer.userID];
                 tprData.Amount++;
                 tprData.Timestamp = timestamp;
                 changedTPR = true;
-                PrintMsgL(target, "SuccessTarget", caller.displayName);
-                PrintMsgL(caller, "Success", target.displayName);
-                var limit = GetHigher(caller, config.TPR.VIPDailyLimits, config.TPR.DailyLimit, true);
-                if (limit > 0) PrintMsgL(caller, "TPRAmount", limit - tprData.Amount);
-                Interface.CallHook("OnTeleportRequestCompleted", target, caller);
+                PrintMsgL(player, "SuccessTarget", originPlayer.displayName);
+                PrintMsgL(originPlayer, "Success", player.displayName);
+                var limit = GetHigher(originPlayer, config.TPR.VIPDailyLimits, config.TPR.DailyLimit, true);
+                if (limit > 0) PrintMsgL(originPlayer, "TPRAmount", limit - tprData.Amount);
+                Interface.CallHook("OnTeleportRequestCompleted", player, originPlayer);
                 RemoveTeleportTimer(teleportTimer);
             };
             TeleportTimers.Add(teleportTimer);
-            RemovePendingRequest(target.userID);
-            PlayersRequests.Remove(target.userID);
-            PlayersRequests.Remove(caller.userID);
+            RemovePendingRequest(player.userID);
+            PlayersRequests.Remove(player.userID);
+            PlayersRequests.Remove(originPlayer.userID);
         }
 
         private void CommandWipeHomes(IPlayer user, string command, string[] args)
@@ -8294,8 +8294,8 @@ namespace Oxide.Plugins
                 if (cupAllyAllowOnBuildingBlock)
                 {
 #if TPDEBUG
-                        // player set the boat and is allowed in by config
-                        Puts($"{player} ally with cupboard owner and has no auth, but allowed by CupAllyAllowOnBuildingBlock=true");
+                    // player set the boat and is allowed in by config
+                    Puts($"{player} ally with cupboard owner and has no auth, but allowed by CupAllyAllowOnBuildingBlock=true");
 #endif
                     return true;
                 }
