@@ -22,6 +22,7 @@ using UnityEngine;
 
 /*
 Added `Allow Cupboard Ally When Building Blocked` to home and TPR (false)
+Added `Allow Cupboard Non-Ally When Building Blocked` to home and TPR (false)
 Added `Allow Sethome On Player-made Boats` (true)
 Added nteleportation.playerboatsinterruptbypass to bypass when sethome is blocked
 Added nteleportation.playerboatssethomebypass to bypass when sethome is blocked
@@ -41,7 +42,7 @@ Added `Custom monument marker dimensions` where you can
 
 namespace Oxide.Plugins
 {
-    [Info("NTeleportation", "nivex", "1.9.461")]
+    [Info("NTeleportation", "nivex", "1.9.462")]
     [Description("Multiple teleportation systems for admin and players")]
     class NTeleportation : RustPlugin
     {
@@ -655,6 +656,9 @@ namespace Oxide.Plugins
             [JsonProperty(PropertyName = "Allow Cupboard Ally When Building Blocked")]
             public bool CupAllyAllowOnBuildingBlocked;
 
+            [JsonProperty(PropertyName = "Allow Cupboard Non-Ally When Building Blocked")]
+            public bool CupNonAllyAllowOnBuildingBlocked;
+
             [JsonProperty(PropertyName = "Block For No Cupboard")]
             public bool BlockForNoCupboard;
 
@@ -800,6 +804,9 @@ namespace Oxide.Plugins
 
             [JsonProperty(PropertyName = "Allow Cupboard Ally When Building Blocked")]
             public bool CupAllyAllowOnBuildingBlocked;
+
+            [JsonProperty(PropertyName = "Allow Cupboard Non-Ally When Building Blocked")]
+            public bool CupNonAllyAllowOnBuildingBlocked;
 
             [JsonProperty(PropertyName = "Block For No Cupboard")]
             public bool BlockForNoCupboard;
@@ -5307,7 +5314,7 @@ namespace Oxide.Plugins
                 }
                 if (err == null)
                 {
-                    err = CheckTargetLocation(player, position, config.Home.UsableIntoBuildingBlocked, config.Home.CupOwnerAllowOnBuildingBlocked, config.Home.CupAllyAllowOnBuildingBlocked, config.Home.BlockForNoCupboard);
+                    err = CheckTargetLocation(player, position, config.Home.UsableIntoBuildingBlocked, config.Home.CupOwnerAllowOnBuildingBlocked, config.Home.CupAllyAllowOnBuildingBlocked || config.Home.CupNonAllyAllowOnBuildingBlocked, config.Home.BlockForNoCupboard);
                 }
                 if (err != null)
                 {
@@ -5497,7 +5504,7 @@ namespace Oxide.Plugins
                     }
                     if (err == null)
                     {
-                        err = CheckTargetLocation(player, position, config.Home.UsableIntoBuildingBlocked, config.Home.CupOwnerAllowOnBuildingBlocked, config.Home.CupAllyAllowOnBuildingBlocked, config.Home.BlockForNoCupboard);
+                        err = CheckTargetLocation(player, position, config.Home.UsableIntoBuildingBlocked, config.Home.CupOwnerAllowOnBuildingBlocked, config.Home.CupNonAllyAllowOnBuildingBlocked || config.Home.CupAllyAllowOnBuildingBlocked, config.Home.BlockForNoCupboard);
                     }
                     if (err != null)
                     {
@@ -5843,7 +5850,7 @@ namespace Oxide.Plugins
                     PrintMsg(player, error);
                     return;
                 }
-                err = CheckTargetLocation(target, target.transform.position, config.TPR.UsableIntoBuildingBlocked, config.TPR.CupOwnerAllowOnBuildingBlocked, config.TPR.CupAllyAllowOnBuildingBlocked && isAlly, config.TPR.BlockForNoCupboard);
+                err = CheckTargetLocation(target, target.transform.position, config.TPR.UsableIntoBuildingBlocked, config.TPR.CupOwnerAllowOnBuildingBlocked, config.TPR.CupNonAllyAllowOnBuildingBlocked || config.TPR.CupAllyAllowOnBuildingBlocked && isAlly, config.TPR.BlockForNoCupboard);
                 if (err != null)
                 {
                     PrintMsgL(player, err);
@@ -6072,7 +6079,7 @@ namespace Oxide.Plugins
                     RemovePendingRequest(player.userID);
                     return;
                 }
-                bool cupAllyAllowOnBuildingBlocked = config.TPR.CupAllyAllowOnBuildingBlocked && IsAlly(originPlayer.userID, player.userID, config.TPT.UseTeams, config.TPT.UseClans, config.TPT.UseFriends);
+                bool cupAllyAllowOnBuildingBlocked = config.TPR.CupNonAllyAllowOnBuildingBlocked || config.TPR.CupAllyAllowOnBuildingBlocked && IsAlly(originPlayer.userID, player.userID, config.TPT.UseTeams, config.TPT.UseClans, config.TPT.UseFriends);
                 err = CheckTargetLocation(originPlayer, player.transform.position, config.TPR.UsableIntoBuildingBlocked, config.TPR.CupOwnerAllowOnBuildingBlocked, cupAllyAllowOnBuildingBlocked, config.TPR.BlockForNoCupboard);
                 if (err != null)
                 {
@@ -6169,7 +6176,7 @@ namespace Oxide.Plugins
                         RemoveTeleportTimer(teleportTimer);
                         return;
                     }
-                    bool cupAllyAllowOnBuildingBlocked = config.TPR.CupAllyAllowOnBuildingBlocked && IsAlly(originPlayer.userID, player.userID, config.TPT.UseTeams, config.TPT.UseClans, config.TPT.UseFriends);
+                    bool cupAllyAllowOnBuildingBlocked = config.TPR.CupNonAllyAllowOnBuildingBlocked || config.TPR.CupAllyAllowOnBuildingBlocked && IsAlly(originPlayer.userID, player.userID, config.TPT.UseTeams, config.TPT.UseClans, config.TPT.UseFriends);
                     err = CheckTargetLocation(originPlayer, player.transform.position, config.TPR.UsableIntoBuildingBlocked, config.TPR.CupOwnerAllowOnBuildingBlocked, cupAllyAllowOnBuildingBlocked, config.TPR.BlockForNoCupboard);
                     if (err != null)
                     {
@@ -8163,7 +8170,7 @@ namespace Oxide.Plugins
                 else if (cupAllyAllowOnBuildingBlocked)
                 {
 #if TPDEBUG
-                    Puts("Player not blocked because CupAllyAllowOnBuildingBlocked=true");
+                    Puts("Player not blocked because AllowOnBuildingBlocked=true");
 #endif
                     denied = false;
                     break;
@@ -8188,22 +8195,25 @@ namespace Oxide.Plugins
             if (block is BoatBuildingBlock)
             {
                 var priv = player.GetVehicleBuildingPrivilege(true);
-                var vehiclePriv = priv as VehiclePrivilege;
-                if (vehiclePriv != null && vehiclePriv.IsAuthed(player))
+                if (priv != null)
                 {
+                    var vehiclePriv = priv as VehiclePrivilege;
+                    if (vehiclePriv != null && vehiclePriv.IsAuthed(player))
+                    {
 #if TPDEBUG
                     Puts($"{player} is authorized on the boat");
 #endif
-                    return true;
-                }
+                        return true;
+                    }
 
-                var bbs = priv as BoatBuildingStation;
-                if (bbs != null && bbs.CanPlayerBuild(player))
-                {
+                    var bbs = priv as BoatBuildingStation;
+                    if (bbs != null && bbs.CanPlayerBuild(player))
+                    {
 #if TPDEBUG
                     Puts($"{player} is authorized on the boat (building station)");
 #endif
-                    return true;
+                        return true;
+                    }
                 }
 
                 if (player.userID == block.OwnerID)
@@ -8243,7 +8253,7 @@ namespace Oxide.Plugins
                 Puts($"{player}: Building ID: {building.ID}");
 #endif
                 // cupboard overlap.  Check privs.
-                if (building.buildingPrivileges == null)
+                if (building.buildingPrivileges == null || building.buildingPrivileges.Count == 0)
                 {
                     if (blockForNoCupboard)
                     {
@@ -8419,9 +8429,13 @@ namespace Oxide.Plugins
             {
                 return "HomeNoFoundation";
             }
-            if (mode == "sethome" && entity is BuildingBlock block && !CheckCupboardBlock(block, player, config.Home.CupOwnerAllowOnBuildingBlocked, config.Home.CupAllyAllowOnBuildingBlocked && IsAlly(block.OwnerID, player.userID, config.Home.UseTeams, config.Home.UseClans, config.Home.UseFriends), config.Home.BlockForNoCupboard, out string err))
+            if (mode == "sethome" && entity is BuildingBlock block)
             {
-                return err;
+                bool cupAllyOrNon = config.Home.CupNonAllyAllowOnBuildingBlocked || config.Home.CupAllyAllowOnBuildingBlocked && IsAlly(block.OwnerID, player.userID, config.Home.UseTeams, config.Home.UseClans, config.Home.UseFriends);
+                if (!CheckCupboardBlock(block, player, config.Home.CupOwnerAllowOnBuildingBlocked, cupAllyOrNon, config.Home.BlockForNoCupboard, out string err))
+                {
+                    return err;
+                }
             }
             if (!config.Home.CheckFoundationForOwner || entity is Tugboat || IsAlly(userid, entity.OwnerID, config.Home.UseTeams, config.Home.UseClans, config.Home.UseFriends))
             {
