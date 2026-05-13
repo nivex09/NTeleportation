@@ -1,7 +1,6 @@
 //#define TPDEBUG
 using Facepunch;
 using Network;
-using Network.Visibility;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
 using Oxide.Core;
@@ -20,29 +19,9 @@ using System.IO;
 using System.Reflection;
 using UnityEngine;
 
-/*
-Added `Allow Cupboard Ally When Building Blocked` to home and TPR (false)
-Added `Allow Cupboard Non-Ally When Building Blocked` to home and TPR (false)
-Added `Allow Sethome On Player-made Boats` (true)
-Added nteleportation.playerboatsinterruptbypass to bypass when sethome is blocked
-Added nteleportation.playerboatssethomebypass to bypass when sethome is blocked
-Added `Auto Generate DeepSea Location` (true) - this will also add the command back to any config unless set to false
-Added nteleportation.tpdeepsea for players to be able to use the /deepsea command
-Added command /deepsea that functions similarly to Outpost and Bandit commands, differences include:
-- Teleports you to the floating city
-- Players require the nteleportation.tpdeepsea permission to use this command
-- If you want to disable this command then set DeepSea -> Command Enabled -> false in the config
-- If you want to remove this command then `Auto Generate DeepSea Location` must be set to `false` first
-Added `Block TPB To Specific Monuments` (none) @dylanstar12
-Added `Seconds Until Teleporting Home Offline Players` (0, disabled)
-Added `Custom monument marker dimensions` where you can
-1. Specify height, width and depth of your own custom monuments, or 
-2. Use a radius when the monument marker is a sphere
-*/
-
 namespace Oxide.Plugins
 {
-    [Info("NTeleportation", "nivex", "1.9.462")]
+    [Info("NTeleportation", "nivex", "1.9.511")]
     [Description("Multiple teleportation systems for admin and players")]
     class NTeleportation : RustPlugin
     {
@@ -1006,6 +985,8 @@ namespace Oxide.Plugins
             deepSeaMaxY = max.y;
             deepSeaMinZ = min.z;
             deepSeaMaxZ = max.z;
+
+            Subscribe(nameof(OnDeepSeaOpened));
         }
 
         private bool IsInDeepSea(Vector3 worldPos)
@@ -3029,6 +3010,7 @@ namespace Oxide.Plugins
 
         private void Init()
         {
+            Unsubscribe(nameof(OnDeepSeaOpened));
             Unsubscribe(nameof(OnEntityKill));
             Unsubscribe(nameof(OnEntitySpawned));
             Unsubscribe(nameof(OnPlayerSleep));
@@ -3924,7 +3906,7 @@ namespace Oxide.Plugins
             }
         }
 
-        private IEnumerator SetupLocation(string key, string displayName, bool autoGen, Action disableTarget, Vector3 vector, Quaternion rotation, float radius, Func<BaseEntity, Vector3> getEntityPosition, Func<BaseEntity, Vector3> getChairPosition)
+        private IEnumerator SetupLocation(string key, string displayName, bool autoGen, bool forced, Action disableTarget, Vector3 vector, Quaternion rotation, float radius, Func<BaseEntity, Vector3> getEntityPosition, Func<BaseEntity, Vector3> getChairPosition)
         {
             var settings = GetSettings(key);
 
@@ -3951,7 +3933,7 @@ namespace Oxide.Plugins
                 }
             }
 
-            if (autoGen && settings.Location == Vector3.zero)
+            if (autoGen && forced || autoGen && settings.Location == Vector3.zero)
             {
 #if TPDEBUG
                 Puts($"  Looking for {displayName} target");
@@ -4004,6 +3986,11 @@ namespace Oxide.Plugins
                         continue;
                     }
 
+                    if (forced && !changed)
+                    {
+                        settings.Locations.Clear();
+                    }
+
                     settings.Location = position;
                     if (!settings.Locations.Contains(position))
                     {
@@ -4035,40 +4022,37 @@ namespace Oxide.Plugins
             yield return null;
         }
 
-        private IEnumerator SetupBandit(Vector3 vector, Quaternion rotation, float radius)
+        private IEnumerator SetupBandit(Vector3 vector, Quaternion rotation, float radius, bool force = false)
         {
-            return SetupLocation(banditCommand, "BanditTown", config.Settings.AutoGenBandit, () => banditEnabled = false, vector, rotation, radius, 
+            return SetupLocation(banditCommand, "BanditTown", config.Settings.AutoGenBandit, force, () => banditEnabled = false, vector, rotation, radius, 
                 entity => entity.transform.position + entity.transform.forward + new Vector3(0f, 2f, 0f),
                 entity => entity.transform.position + new Vector3(0f, 1.1f, 0f) + entity.transform.forward
             );
         }
 
-        private IEnumerator SetupOutpost(Vector3 vector, Quaternion rotation, float radius)
+        private IEnumerator SetupOutpost(Vector3 vector, Quaternion rotation, float radius, bool force = false)
         {
-            return SetupLocation(outpostCommand, "Outpost", config.Settings.AutoGenOutpost, () => outpostEnabled = false, vector, rotation, radius, 
+            return SetupLocation(outpostCommand, "Outpost", config.Settings.AutoGenOutpost, force, () => outpostEnabled = false, vector, rotation, radius, 
                 entity => entity.transform.position + entity.transform.forward + new Vector3(0f, 2f, 0f),
                 entity => entity.transform.position + new Vector3(0f, 1.1f, 0f) + entity.transform.right
             );
         }
 
-        private IEnumerator SetupDeepSea(Vector3 vector, Quaternion rotation, float radius)
+        private IEnumerator SetupDeepSea(Vector3 vector, Quaternion rotation, float radius, bool force = false)
         {
-            return SetupLocation(deepseaCommand, "DeepSea", config.Settings.AutoGenDeepSea, () => deepseaEnabled = false, vector, rotation, radius,
+            return SetupLocation(deepseaCommand, "DeepSea", config.Settings.AutoGenDeepSea, force, () => deepseaEnabled = false, vector, rotation, radius,
                 entity => entity.transform.position + entity.transform.forward + new Vector3(0f, 2f, 0f),
                 entity => entity.transform.position + new Vector3(0f, 1.1f, 0f) + (entity.transform.forward * 0.5f)
             );
+            deepseaEnabled = AnyDeepSeaPoints();
         }
 
         private void OnDeepSeaOpened(DeepSeaManager dsm)
         {
             deepseaEnabled = AnyDeepSeaPoints();
-            if (!config.Settings.AutoGenDeepSea || deepseaEnabled)
+            if (config.Settings.AutoGenDeepSea && GetFloatingCitySpawnPoint(out Vector3 v, out Quaternion rot, out float r))
             {
-                return;
-            }
-            if (GetFloatingCitySpawnPoint(out Vector3 v, out Quaternion rot, out float r))
-            {
-                ServerMgr.Instance.StartCoroutine(SetupDeepSea(v, rot, r));
+                ServerMgr.Instance.StartCoroutine(SetupDeepSea(v, rot, r, true));
             }
         }
 
@@ -7391,23 +7375,23 @@ namespace Oxide.Plugins
 
             // credits to @ctv and @Def for their assistance
 
-            player.PauseFlyHackDetection(5f);
+            player.PauseFlyHackDetection(5f); // UsePortal
             player.PauseSpeedHackDetection(5f);
             player.ApplyStallProtection(4f);
-            player.UpdateActiveItem(default);
-            player.EnsureDismounted();
-            player.Server_CancelGesture();
+            player.UpdateActiveItem(default); // safe zone
+            player.EnsureDismounted(); // stubborn plugins
+            player.Server_CancelGesture(); // was issue where gestures would become stuck before, unsure if still an issue
 
             if (player.HasParent())
             {
-                player.SetParent(null, true, true);
+                player.SetParent(null, true, true); // more stubborn plugins
             }
 
-            if (player.IsConnected)
+            if (player.IsConnected) // && !Net.sv.visibility.IsInside(player.net.group, newPosition, player.networkRange)) // I kept having complaints about people falling through geometry so I removed the IsInside check
             {
                 if (!player.limitNetworking && !player.isInvisible)
                 {
-                    player.SendNetworkUpdateImmediate();
+                    player.SendNetworkUpdateImmediate(); // this seems useless
                 }
 
                 player.StartSleeping();
@@ -7425,14 +7409,18 @@ namespace Oxide.Plugins
             {
                 if (!player.limitNetworking && !player.isInvisible)
                 {
-                    player.UpdateNetworkGroup();
+                    player.UpdateNetworkGroup(); // call after player.Teleport
+                    player.SendNetworkUpdateImmediate(); // call after ReceivingSnapshot flag
                 }
+
+                player.ClearEntityQueue(null);
+                player.SendSubscribedGroupsSnapshot();
 
                 if (CanWake(player)) player.Invoke(() =>
                 {
                     if (player != null && player.IsConnected)
                     {
-                        player.EndSleeping();
+                        player.EndSleeping(); // this can cause players to fall through bases on rare occassion. clips showed that the client hadn't rendered their base yet?
                     }
                 }, 0.5f);
             }
